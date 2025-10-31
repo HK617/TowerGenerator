@@ -51,6 +51,15 @@ public class BuildPlacement : MonoBehaviour
     [Tooltip("このサイズ以下をズームイン扱い（細かいグリッド）にする")]
     public float fineGridThreshold = 3f;
 
+    // 連続設置中かどうか
+    bool _isDragging = false;
+
+    // ドラッグでたまっているセル（確定前の仮おきデータ）
+    readonly List<(Vector2Int cell, Vector3 center)> _previewCells = new();
+
+    // ドラッグで表示するゴーストたち
+    readonly List<GameObject> _dragGhosts = new();
+
     BuildingDef _current;
     GameObject _spawnedPreviewGO;
     Vector3Int _lastBigCell = new(int.MinValue, int.MinValue, 0);
@@ -104,21 +113,89 @@ public class BuildPlacement : MonoBehaviour
 
         if (useFineGrid)
         {
-            // ズームインモード：ポインタは常に非表示（あなたの要望どおり）
             UpdatePointerActive(false, false);
 
-            // ここからは「建築が選ばれているときだけ」動けばいい
-            if (_current == null) return;
+            if (_current == null)
+            {
+                ClearPreview();
+                ClearDragGhosts();
+                _previewCells.Clear();
+                _isDragging = false;
+                return;
+            }
 
             Vector2Int fineCell = WorldToFineCell(world, fineCellSize);
-            Vector3 fineCenter = FineCellToWorld(fineCell, fineCellSize) + hoverOffset;
+            // 基本のセル中心
+            Vector3 baseCenter = FineCellToWorld(fineCell, fineCellSize) + hoverOffset;
 
-            UpdatePreviewAndPointerFine(fineCell, fineCenter);
+            // ★ even補正を追加
+            Vector3 evenOff = GetEvenSizeOffsetForFine(_current);
+            Vector3 finalCenter = baseCenter + evenOff;
 
+            // 今のセルに置けるか
+            bool canHere = CanPlaceAtFine(fineCell, finalCenter);
+
+            // ── 常にメインプレビューを出す ──
+            EnsurePrefabPreview();
+            if (_spawnedPreviewGO)
+            {
+                _spawnedPreviewGO.transform.position = finalCenter;
+                var col = canHere ? new Color(1f, 1f, 1f, previewAlpha)
+                                  : new Color(1f, 0.4f, 0.4f, previewAlpha);
+                SetSpriteColor(_spawnedPreviewGO.transform, col);
+            }
+
+            // ── 左押しでドラッグ開始 ──
             if (mouse.leftButton.wasPressedThisFrame)
-                PlaceAtFine(fineCell, fineCenter);
+            {
+                _isDragging = true;
+                _previewCells.Clear();
+                ClearDragGhosts();
+            }
+
+            // ── ドラッグ中は通ったセルをゴースト化 ──
+            if (_isDragging && mouse.leftButton.isPressed)
+            {
+                // すでに「footprint がかぶる」ゴーストがあるなら作らない
+                if (!FootprintOverlapsAny(fineCell, _current, _previewCells))
+                {
+                    CreateDragGhost(finalCenter, CanPlaceAtFine(fineCell, finalCenter));
+                    _previewCells.Add((fineCell, finalCenter));
+                }
+            }
+
+
+            // ── 左を離したら一括設置 ──
+            if (_isDragging && mouse.leftButton.wasReleasedThisFrame)
+            {
+                foreach (var p in _previewCells)
+                {
+                    if (CanPlaceAtFine(p.cell, p.center))
+                        PlaceAtFine(p.cell, p.center);   // ★ ここでも center は偶数補正後
+                }
+                _previewCells.Clear();
+                ClearDragGhosts();
+                _isDragging = false;
+            }
+
+            // ── 右クリック ──
             if (mouse.rightButton.wasPressedThisFrame)
-                DeleteAtFine(fineCell, fineCenter);
+            {
+                if (_isDragging || _previewCells.Count > 0)
+                {
+                    // ① ドラッグ中ならプレビューだけキャンセル
+                    _previewCells.Clear();
+                    ClearDragGhosts();
+                    _isDragging = false;
+                }
+                else
+                {
+                    // ② ドラッグしてないときは実ブロックを消す（同じ補正位置で）
+                    DeleteAtFine(fineCell, finalCenter);
+                }
+            }
+
+            return;
         }
         else
         {
@@ -293,16 +370,14 @@ public class BuildPlacement : MonoBehaviour
     void PlaceAtFine(Vector2Int fcell, Vector3 worldCenter)
     {
         if (_current?.prefab == null) return;
-        if (!CanPlaceAtFine(fcell, worldCenter)) return;
 
-        // ← 追加：偶数サイズならここで位置をずらす
-        Vector3 evenOff = GetEvenSizeOffsetForFine(_current);
-        Vector3 finalPos = worldCenter + evenOff;
+        // worldCenter はすでに偶数補正済みなのでそのまま使う
+        Vector3 finalCenter = worldCenter;
 
-        // 実際に置く
-        var go = Instantiate(_current.prefab, finalPos, Quaternion.identity, prefabParent);
+        if (!CanPlaceAtFine(fcell, finalCenter)) return;
 
-        // 中心セルだけじゃなく、全部登録する（セル登録は今まで通り）
+        var go = Instantiate(_current.prefab, finalCenter, Quaternion.identity, prefabParent);
+
         int w = Mathf.Max(1, _current.cellsWidth);
         int height = Mathf.Max(1, _current.cellsHeight);
 
@@ -324,34 +399,28 @@ public class BuildPlacement : MonoBehaviour
             }
         }
 
-        // FlowField への登録も「実際に置いた位置」でやる
         if (flowField != null)
-            RegisterBuildingToFlowField(_current, finalPos, true);
+            RegisterBuildingToFlowField(_current, finalCenter, true);
     }
 
     void DeleteAtFine(Vector2Int fcell, Vector3 worldCenter)
     {
-        if (_current == null)
-        {
-            // 今選んでる建物と違うのを消すケースはここに追加で
-        }
+        Vector3 finalCenter = worldCenter; // worldCenterは補正済み
 
         if (!_placedFine.TryGetValue(fcell, out var go) || go == null)
             return;
 
         var keysToRemove = new List<Vector2Int>();
         foreach (var kv in _placedFine)
-        {
             if (kv.Value == go)
                 keysToRemove.Add(kv.Key);
-        }
         foreach (var k in keysToRemove)
             _placedFine.Remove(k);
 
         Destroy(go);
 
         if (flowField != null)
-            RegisterBuildingToFlowField(_current, worldCenter, false);
+            RegisterBuildingToFlowField(_current, finalCenter, false);
     }
 
     bool CanPlaceAtFine(Vector2Int fcell, Vector3 worldCenter)
@@ -404,26 +473,6 @@ public class BuildPlacement : MonoBehaviour
         }
 
         return true;
-    }
-
-    // 細かいグリッドで even(2,4...) サイズの建物を置くときに
-    // グリッドの中心にぴったり乗るようにするオフセット
-    Vector3 GetEvenSizeOffsetForFine(BuildingDef def)
-    {
-        if (def == null) return Vector3.zero;
-
-        float offX = 0f;
-        float offY = 0f;
-
-        // 横が2,4,6...なら 0.5マスぶん左へ
-        if ((def.cellsWidth % 2) == 0)
-            offX = -fineCellSize * 0.5f;
-
-        // 縦が2,4,6...なら 0.5マスぶん下へ
-        if ((def.cellsHeight % 2) == 0)
-            offY = -fineCellSize * 0.5f;
-
-        return new Vector3(offX, offY, 0f);
     }
 
     void UpdatePreviewAndPointerFine(Vector2Int fcell, Vector3 worldCenter)
@@ -514,13 +563,91 @@ public class BuildPlacement : MonoBehaviour
         if (_spawnedPreviewGO != null)
         {
 #if UNITY_EDITOR
-            if (!Application.isPlaying) DestroyImmediate(_spawnedPreviewGO);
-            else Destroy(_spawnedPreviewGO);
+        if (!Application.isPlaying) DestroyImmediate(_spawnedPreviewGO);
+        else Destroy(_spawnedPreviewGO);
 #else
             Destroy(_spawnedPreviewGO);
 #endif
             _spawnedPreviewGO = null;
         }
+
+        // ★ 追加：ドラッグゴーストも消す
+        ClearDragGhosts();
+    }
+
+    void CreateDragGhost(Vector3 pos, bool canPlace)
+    {
+        if (_current?.prefab == null) return;
+
+        var go = Instantiate(_current.prefab, pos, Quaternion.identity);
+        if (prefabPreview) go.transform.SetParent(prefabPreview, true);
+
+        foreach (var c in go.GetComponentsInChildren<Collider2D>(true)) c.enabled = false;
+        foreach (var c in go.GetComponentsInChildren<Collider>(true)) c.enabled = false;
+
+        var col = canPlace ? new Color(1f, 1f, 1f, previewAlpha)
+                           : new Color(1f, 0.4f, 0.4f, previewAlpha);
+        SetSpriteColor(go.transform, col);
+
+        _dragGhosts.Add(go);
+    }
+
+    // candidateCell に current を置いたときの footprint が
+    // すでに登録済みのどれかとかぶるなら true
+    bool FootprintOverlapsAny(Vector2Int candidateCell,
+                              BuildingDef def,
+                              List<(Vector2Int cell, Vector3 center)> existing)
+    {
+        foreach (var e in existing)
+        {
+            if (FootprintOverlaps(candidateCell, def, e.cell, def))
+                return true;
+        }
+        return false;
+    }
+
+    // 2つのセルを「同じ BuildingDef の幅×高さで置いた」としたときに
+    // 占有セルが1マスでもかぶるかどうか
+    bool FootprintOverlaps(Vector2Int aCell, BuildingDef aDef,
+                           Vector2Int bCell, BuildingDef bDef)
+    {
+        int aw = Mathf.Max(1, aDef.cellsWidth);
+        int ah = Mathf.Max(1, aDef.cellsHeight);
+        int bw = Mathf.Max(1, bDef.cellsWidth);
+        int bh = Mathf.Max(1, bDef.cellsHeight);
+
+        // 中心セルから左右上下に広がるので「中心をずらした矩形」としてみる
+        // 中心 = aCell, 幅 = aw, 高さ = ah
+        // 0.25 グリッドなので、単純にセル番号で矩形を作っていい
+        int aMinX = aCell.x - aw / 2;
+        int aMaxX = aMinX + aw - 1;
+        int aMinY = aCell.y - ah / 2;
+        int aMaxY = aMinY + ah - 1;
+
+        int bMinX = bCell.x - bw / 2;
+        int bMaxX = bMinX + bw - 1;
+        int bMinY = bCell.y - bh / 2;
+        int bMaxY = bMinY + bh - 1;
+
+        bool xOverlap = !(aMaxX < bMinX || bMaxX < aMinX);
+        bool yOverlap = !(aMaxY < bMinY || bMaxY < aMinY);
+
+        return xOverlap && yOverlap;
+    }
+
+    void ClearDragGhosts()
+    {
+        foreach (var g in _dragGhosts)
+        {
+            if (g == null) continue;
+#if UNITY_EDITOR
+        if (!Application.isPlaying) DestroyImmediate(g);
+        else Destroy(g);
+#else
+            Destroy(g);
+#endif
+        }
+        _dragGhosts.Clear();
     }
 
     void UpdatePointerActive(bool showOK, bool showNG, Vector3? moveTo = null)
@@ -589,6 +716,17 @@ public class BuildPlacement : MonoBehaviour
         return new Vector2Int(gx, gy);
     }
 
+    // 偶数サイズの建物は左下方向に0.5マスずらす（グリッド揃え）
+    Vector3 GetEvenSizeOffsetForFine(BuildingDef def)
+    {
+        if (def == null) return Vector3.zero;
+
+        float cs = fineCellSize; // 0.25f など
+        float offX = (def.cellsWidth % 2 == 0) ? -cs * 0.5f : 0f;
+        float offY = (def.cellsHeight % 2 == 0) ? -cs * 0.5f : 0f;
+
+        return new Vector3(offX, offY, 0f);
+    }
     static Vector3 FineCellToWorld(Vector2Int cell, float cellSize)
     {
         float x = cell.x * cellSize + cellSize * 0.5f;
