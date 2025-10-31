@@ -1,5 +1,5 @@
-﻿using UnityEditor;
-using UnityEngine;
+﻿using UnityEngine;
+using UnityEditor;
 
 [CustomEditor(typeof(BuildingDef))]
 public class BuildingDefEditor : Editor
@@ -27,9 +27,9 @@ public class BuildingDefEditor : Editor
         cellsHeight = serializedObject.FindProperty("cellsHeight");
         rebuildAfterPlace = serializedObject.FindProperty("rebuildAfterPlace");
 
-        if (def.shapeData == null || def.shapeData.Count == 0)
+        if (def.shape == null)
         {
-            def.EnsureShape(3);
+            ResizeShape(3); // デフォルトは3×3
             EditorUtility.SetDirty(def);
         }
     }
@@ -46,26 +46,26 @@ public class BuildingDefEditor : Editor
 
         EditorGUILayout.Space(10);
         EditorGUILayout.LabelField("FlowField Block Shape", EditorStyles.boldLabel);
-        EditorGUILayout.HelpBox("赤=ブロック(通行不可)、緑=通行可。グリッドサイズは奇数・偶数どちらも選択できます。", MessageType.Info);
+        EditorGUILayout.HelpBox("赤=ブロック(通行不可)、緑=通行可。\nグリッドサイズは奇数・偶数どちらも選択可。", MessageType.Info);
 
-        // グリッドサイズ選択（2〜9）
-        int curSize = def.shapeSize;
-        int[] sizes = { 2, 3, 4, 5, 6, 7, 8, 9 };
-        string[] labels = { "2×2", "3×3", "4×4", "5×5", "6×6", "7×7", "8×8", "9×9" };
-        int newSize = EditorGUILayout.IntPopup("Grid Size", curSize, labels, sizes);
-        if (newSize != curSize)
+        // グリッドサイズ選択：偶数も含める
+        int currentSize = def.shape != null ? def.shape.GetLength(0) : 3;
+        int[] sizeOptions = { 2, 3, 4, 5, 6, 7, 8, 9 };
+        string[] sizeLabels = { "2×2", "3×3", "4×4", "5×5", "6×6", "7×7", "8×8", "9×9" };
+        int newSize = EditorGUILayout.IntPopup("Grid Size", currentSize, sizeLabels, sizeOptions);
+
+        if (newSize != currentSize)
         {
             if (EditorUtility.DisplayDialog(
                 "Grid Size Change",
-                $"グリッドを {curSize}×{curSize} から {newSize}×{newSize} に変更します。\n既存の形状データはトリミング/拡張されます。",
+                $"グリッドを {currentSize}×{currentSize} から {newSize}×{newSize} に変更します。\n既存の形状データは消去されます。",
                 "OK", "キャンセル"))
             {
-                def.EnsureShape(newSize);
-                EditorUtility.SetDirty(def);
+                ResizeShape(newSize);
             }
         }
 
-        DrawShapeGrid(def);
+        DrawShapeGrid();
 
         EditorGUILayout.Space(10);
         EditorGUILayout.PropertyField(cellsWidth);
@@ -78,33 +78,42 @@ public class BuildingDefEditor : Editor
             EditorUtility.SetDirty(def);
     }
 
-    void DrawShapeGrid(BuildingDef def)
+    void ResizeShape(int newSize)
     {
-        int s = def.shapeSize;
-        float boxSize = Mathf.Clamp(150f / s, 12f, 35f);
-        Color old = GUI.backgroundColor;
+        def.shape = new bool[newSize, newSize];
+        EditorUtility.SetDirty(def);
+    }
+
+    void DrawShapeGrid()
+    {
+        if (def.shape == null) return;
+        int gridSize = def.shape.GetLength(0);
 
         GUILayout.BeginVertical("box");
-        GUILayout.Label($"Shape ({s}×{s})", EditorStyles.boldLabel);
+        GUILayout.Label($"Shape ({gridSize}×{gridSize}):", EditorStyles.boldLabel);
 
-        // 上から下へ並べたいので y を後ろから
-        for (int y = s - 1; y >= 0; y--)
+        float boxSize = Mathf.Clamp(150f / gridSize, 12f, 30f);
+        Color oldColor = GUI.backgroundColor;
+
+        for (int y = gridSize - 1; y >= 0; y--)
         {
             GUILayout.BeginHorizontal();
-            for (int x = 0; x < s; x++)
+            for (int x = 0; x < gridSize; x++)
             {
-                bool val = def.GetShape(x, y);
+                bool val = def.shape[x, y];
                 GUI.backgroundColor = val ? new Color(1f, 0.4f, 0.4f) : new Color(0.4f, 1f, 0.4f);
 
-                bool newVal = GUILayout.Toggle(val, "", "Button", GUILayout.Width(boxSize), GUILayout.Height(boxSize));
+                bool newVal = GUILayout.Toggle(val, "", "Button",
+                    GUILayout.Width(boxSize), GUILayout.Height(boxSize));
+
                 if (newVal != val)
                 {
-                    Undo.RecordObject(def, "Toggle Shape Cell");
-                    def.SetShape(x, y, newVal);
+                    Undo.RecordObject(def, "Change Shape");
+                    def.shape[x, y] = newVal;
                     EditorUtility.SetDirty(def);
                 }
 
-                GUI.backgroundColor = old;
+                GUI.backgroundColor = oldColor;
             }
             GUILayout.EndHorizontal();
         }
