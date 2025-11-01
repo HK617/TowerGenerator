@@ -1,5 +1,9 @@
-using System.Collections.Generic;
+ï»¿using System.Collections.Generic;
 using UnityEngine;
+using Unity.Burst;
+using Unity.Collections;
+using Unity.Jobs;
+using Unity.Mathematics;
 
 public class FlowField025 : MonoBehaviour
 {
@@ -8,10 +12,10 @@ public class FlowField025 : MonoBehaviour
     public int gridW = 200;
     public int gridH = 200;
 
-    // --- ˆÈ‘O‚Í‚±‚±‚É baseTransform ‚ª‚ ‚Á‚ÄA‚»‚ê‚ğ(0,0)‚ÉŒ©—§‚Ä‚Ä‚¢‚Ü‚µ‚½‚ª ---
-    // --- ¡‰ñ‚Íu‚ ‚Æ‚©‚çBase‚ÌˆÊ’u‚ğ‚à‚ç‚¤v•û®‚É•Ï‚¦‚Ü‚·                ---
+    [Header("Job / Burst")]
+    public bool useJobs = true;
+    public float checkJobInterval = 0.02f;
 
-    // ”z—ñ‚Ì’†‰›‚ğ (0,0) ‚É‚·‚é
     int centerX;
     int centerY;
 
@@ -19,10 +23,29 @@ public class FlowField025 : MonoBehaviour
     Vector2[,] flow;
     bool[,] blocked;
 
-    // š’Ç‰ÁFŒ»İ‚Ìƒ^[ƒQƒbƒgi=Basej‚ÌƒOƒŠƒbƒhÀ•W
     bool hasTarget = false;
     int targetGX;
     int targetGY;
+
+    NativeArray<byte> nBlocked;
+    NativeArray<int> nDist;
+    NativeArray<float2> nFlow;
+
+    JobHandle rebuildHandle;
+    bool jobRunning = false;
+    bool rebuildQueued = false;
+    float nextJobCheckTime = 0f;
+
+    // â˜… ã‚¸ãƒ§ãƒ–ä¸­ã®æ›¸ãè¾¼ã¿ã‚’è²¯ã‚ã¦ãŠããƒãƒƒãƒ•ã‚¡
+    struct PendingWrite
+    {
+        public int gx, gy;
+        public byte value; // 0 walkable, 1 blocked
+    }
+    List<PendingWrite> pendingWrites = new List<PendingWrite>(256);
+    bool pendingWritesNeedRebuild = false;
+
+    const int INF = 999999;
 
     void Awake()
     {
@@ -33,34 +56,122 @@ public class FlowField025 : MonoBehaviour
         flow = new Vector2[gridW, gridH];
         blocked = new bool[gridW, gridH];
 
-        // Å‰‚Í‘S•”‚Ó‚³‚¢‚Å‚¨‚­iHexPerTileFineGrid ‚ªŠJ‚¯‚Ä‚¢‚­j
         for (int x = 0; x < gridW; x++)
             for (int y = 0; y < gridH; y++)
-                blocked[x, y] = true;
+                blocked[x, y] = true;   // åˆæœŸã¯ãµã•ã„ã§ãŠã
+
+        int len = gridW * gridH;
+        nBlocked = new NativeArray<byte>(len, Allocator.Persistent);
+        nDist = new NativeArray<int>(len, Allocator.Persistent);
+        nFlow = new NativeArray<float2>(len, Allocator.Persistent);
+
+        for (int i = 0; i < len; i++)
+        {
+            nBlocked[i] = 1;
+            nDist[i] = INF;
+            nFlow[i] = float2.zero;
+        }
     }
 
-    // ---------- ŠO‚©‚çŒÄ‚ÔAPI ----------
+    void OnDestroy()
+    {
+        if (jobRunning)
+        {
+            rebuildHandle.Complete();
+            jobRunning = false;
+        }
 
-    // u‚±‚±‚Í•à‚¯‚év
+        if (nBlocked.IsCreated) nBlocked.Dispose();
+        if (nDist.IsCreated) nDist.Dispose();
+        if (nFlow.IsCreated) nFlow.Dispose();
+    }
+
+    void Update()
+    {
+        // ã‚¸ãƒ§ãƒ–ãŒå‹•ã„ã¦ã„ã‚‹ãªã‚‰ã€ãŸã¾ã«æ§˜å­ã‚’è¦‹ã‚‹
+        if (jobRunning && Time.unscaledTime >= nextJobCheckTime)
+        {
+            if (rebuildHandle.IsCompleted)
+            {
+                rebuildHandle.Complete();
+                jobRunning = false;
+
+                // ã‚¸ãƒ§ãƒ–ã®çµæœã‚’ãƒãƒãƒ¼ã‚¸ãƒ‰å´ã«ã‚³ãƒ”ãƒ¼
+                CopyNativeToManaged();
+
+                // â˜… æºœã¾ã£ã¦ãŸæ›¸ãè¾¼ã¿ã‚’ã„ã¾é©ç”¨
+                ApplyPendingWrites();
+
+                // â˜… ãƒãƒƒãƒ•ã‚¡æ›¸ãè¾¼ã¿ã§ã€Œã‚‚ã†ä¸€å›çµ„ã¿ç›´ã—ãŸã„ã€ãªã‚‰ã“ã“ã§1å›ã ã‘Rebuild
+                if (pendingWritesNeedRebuild || rebuildQueued)
+                {
+                    pendingWritesNeedRebuild = false;
+                    rebuildQueued = false;
+                    Rebuild();   // ã“ã“ã§ã¯jobRunning=falseãªã®ã§ç´ ç›´ã«èµ°ã‚‹
+                }
+            }
+
+            nextJobCheckTime = Time.unscaledTime + checkJobInterval;
+        }
+    }
+
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ å¤–éƒ¨API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
     public void MarkWalkable(float wx, float wy)
     {
         if (!WorldToCell(new Vector2(wx, wy), out int gx, out int gy)) return;
+
+        if (jobRunning)
+        {
+            // â˜… ã„ã¾ã¯è§¦ã‚Œãªã„ã®ã§ã‚­ãƒ¥ãƒ¼ã«ç©ã‚€ã ã‘
+            pendingWrites.Add(new PendingWrite { gx = gx, gy = gy, value = 0 });
+            pendingWritesNeedRebuild = true; // ã“ã‚Œã‚’é©ç”¨ã—ãŸã‚‰å†è¨ˆç®—ã—ãŸã„
+            return;
+        }
+
+        // ã‚¸ãƒ§ãƒ–ãŒèµ°ã£ã¦ã„ãªã„ãªã‚‰å³æ™‚åæ˜ 
         blocked[gx, gy] = false;
+        nBlocked[ToIndex(gx, gy)] = 0;
+
+        if (useJobs && hasTarget)
+            Rebuild();
     }
 
-    // u‚±‚±‚Í‚Ó‚³‚®v
     public void MarkBlocked(float wx, float wy)
     {
         if (!WorldToCell(new Vector2(wx, wy), out int gx, out int gy)) return;
+
+        if (jobRunning)
+        {
+            pendingWrites.Add(new PendingWrite { gx = gx, gy = gy, value = 1 });
+            pendingWritesNeedRebuild = true;
+            return;
+        }
+
         blocked[gx, gy] = true;
+        nBlocked[ToIndex(gx, gy)] = 1;
+
+        if (useJobs && hasTarget)
+            Rebuild();
     }
 
-    // š’Ç‰ÁFBase‚ªŒš‚Á‚½‚Æ‚«‚É‚±‚±‚ğŒÄ‚ñ‚Å‚à‚ç‚¤
-    public void SetTargetWorld(Vector2 worldPos)
+    public void SetTargetWorld(Vector2 world)
     {
-        if (!WorldToCell(worldPos, out int gx, out int gy))
+        if (!WorldToCell(world, out int gx, out int gy))
         {
-            Debug.LogWarning($"FlowField025: target out of range {worldPos}");
+            hasTarget = false;
+            return;
+        }
+
+        // â˜… ã‚´ãƒ¼ãƒ«å¤‰æ›´ã¯å„ªå…ˆåº¦é«˜ã„ã®ã§ã€ã‚¸ãƒ§ãƒ–ä¸­ãªã‚‰ä¸€å›çµ‚ã‚ã‚‹ã®ã‚’å¾…ã£ã¦ã‹ã‚‰åæ˜ ã™ã‚‹
+        if (jobRunning)
+        {
+            // çµ‚ã‚ã£ãŸã‚ã¨ã«ã‚‚ã†ä¸€åº¦å‘¼ã‚“ã§ã»ã—ã„ã®ã§ãƒ•ãƒ©ã‚°ã‚’ç«‹ã¦ã‚‹ã ã‘ã§ã‚‚ã„ã„ãŒã€
+            // ã“ã“ã§ã¯ã‚·ãƒ³ãƒ—ãƒ«ã«å¾Œã§Rebuildã•ã›ã‚‹
+            rebuildQueued = true;
+            targetGX = gx;
+            targetGY = gy;
+            hasTarget = true;
             return;
         }
 
@@ -68,64 +179,84 @@ public class FlowField025 : MonoBehaviour
         targetGY = gy;
         hasTarget = true;
 
-        // ‚à‚ç‚Á‚½‚ç‚·‚®ÄŒvZ
         Rebuild();
     }
 
-    // “G‚ª“Ç‚Ş‚Æ‚«—p
     public Vector2 GetFlowDir(Vector2 worldPos)
     {
-        // ‚à‚¤uBase‚ğ(0,0)‚ÉŒ©—§‚Ä‚év•â³‚Í‚µ‚È‚¢
         if (!WorldToCell(worldPos, out int gx, out int gy))
             return Vector2.zero;
         return flow[gx, gy];
     }
 
-    // ÄŒvZ
     public void Rebuild()
     {
-        // ƒ^[ƒQƒbƒg‚ª‚Ü‚¾Œˆ‚Ü‚Á‚Ä‚È‚¢‚È‚ç‰½‚à‚µ‚È‚¢
         if (!hasTarget)
         {
-            // flow‚ğƒ[ƒ‚Å–„‚ß‚Ä‚¨‚­
+            // ã‚¿ãƒ¼ã‚²ãƒƒãƒˆç„¡ã„ãªã‚‰å…¨éƒ¨ã‚¼ãƒ­
             for (int x = 0; x < gridW; x++)
                 for (int y = 0; y < gridH; y++)
                     flow[x, y] = Vector2.zero;
             return;
         }
 
-        BuildDistanceField();
-        BuildDirectionField();
+        if (!useJobs)
+        {
+            BuildDistanceFieldSync();
+            BuildDirectionFieldSync();
+            return;
+        }
+
+        // ã™ã§ã«èµ°ã£ã¦ãŸã‚‰ã€Œçµ‚ã‚ã£ãŸã‚‰ã‚„ã£ã¦ã€ã§OK
+        if (jobRunning)
+        {
+            rebuildQueued = true;
+            return;
+        }
+
+        // â˜…ã„ã¾æ›¸ãè¾¼ã¿ãƒãƒƒãƒ•ã‚¡ãŒæ®‹ã£ã¦ãŸã‚‰å…ˆã«é©ç”¨ã—ã¦ã‹ã‚‰èµ°ã‚‹
+        if (pendingWrites.Count > 0)
+            ApplyPendingWrites();
+
+        // ã‚¸ãƒ§ãƒ–ã‚’ã‚¹ã‚±ã‚¸ãƒ¥ãƒ¼ãƒ«
+        var distJob = new DistanceFieldJob
+        {
+            width = gridW,
+            height = gridH,
+            targetX = targetGX,
+            targetY = targetGY,
+            blocked = nBlocked,
+            dist = nDist
+        };
+        JobHandle h1 = distJob.Schedule();
+
+        var dirJob = new DirectionFieldJob
+        {
+            width = gridW,
+            height = gridH,
+            blocked = nBlocked,
+            dist = nDist,
+            flow = nFlow
+        };
+        JobHandle h2 = dirJob.Schedule(h1);
+
+        rebuildHandle = h2;
+        jobRunning = true;
+        nextJobCheckTime = Time.unscaledTime + checkJobInterval;
     }
 
-    // ƒ[ƒ‹ƒh ¨ ƒOƒŠƒbƒhindex
-    public bool WorldToCell(Vector2 world, out int gx, out int gy)
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ åŒæœŸç‰ˆ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    void BuildDistanceFieldSync()
     {
-        gx = Mathf.FloorToInt(world.x / cellSize) + centerX;
-        gy = Mathf.FloorToInt(world.y / cellSize) + centerY;
-        if (gx < 0 || gy < 0 || gx >= gridW || gy >= gridH) return false;
-        return true;
-    }
-
-    // ---------- ’†g ----------
-
-    void BuildDistanceField()
-    {
-        const int INF = 999999;
-
         for (int x = 0; x < gridW; x++)
             for (int y = 0; y < gridH; y++)
                 dist[x, y] = INF;
 
         var q = new Queue<Vector2Int>();
-
-        // š‚±‚±‚ª¡‰ñˆê”Ô‘å–‚È‚Æ‚±‚ë
-        // ‚±‚ê‚Ü‚Å‚Íu’†‰›ƒZƒ‹‚ğƒS[ƒ‹‚É‚µ‚Ä‚¢‚½v‚ªA
-        // ‚±‚ê‚©‚ç‚ÍuSetTargetWorld ‚Å“n‚³‚ê‚½ƒZƒ‹v‚ğƒS[ƒ‹‚É‚·‚é
         dist[targetGX, targetGY] = 0;
         q.Enqueue(new Vector2Int(targetGX, targetGY));
 
-        // 4‹ß–T
         Vector2Int[] dirs = {
             new Vector2Int( 1, 0),
             new Vector2Int(-1, 0),
@@ -150,21 +281,15 @@ public class FlowField025 : MonoBehaviour
                 q.Enqueue(new Vector2Int(nx, ny));
             }
         }
+
+        // nativeã«ã‚‚åæ˜ 
+        for (int y = 0; y < gridH; y++)
+            for (int x = 0; x < gridW; x++)
+                nDist[ToIndex(x, y)] = dist[x, y];
     }
 
-    void BuildDirectionField()
+    void BuildDirectionFieldSync()
     {
-        Vector2Int[] dirs8 = {
-            new Vector2Int( 1, 0),
-            new Vector2Int(-1, 0),
-            new Vector2Int( 0, 1),
-            new Vector2Int( 0,-1),
-            new Vector2Int( 1, 1),
-            new Vector2Int( 1,-1),
-            new Vector2Int(-1, 1),
-            new Vector2Int(-1,-1),
-        };
-
         for (int x = 0; x < gridW; x++)
         {
             for (int y = 0; y < gridH; y++)
@@ -172,25 +297,187 @@ public class FlowField025 : MonoBehaviour
                 if (blocked[x, y])
                 {
                     flow[x, y] = Vector2.zero;
+                    nFlow[ToIndex(x, y)] = float2.zero;
                     continue;
                 }
 
                 int best = dist[x, y];
                 Vector2 bestDir = Vector2.zero;
 
-                foreach (var d in dirs8)
-                {
-                    int nx = x + d.x;
-                    int ny = y + d.y;
-                    if (nx < 0 || ny < 0 || nx >= gridW || ny >= gridH) continue;
-                    if (dist[nx, ny] >= best) continue;
-
-                    best = dist[nx, ny];
-                    bestDir = new Vector2(d.x, d.y).normalized;
-                }
+                CheckDirSync(x, y, 1, 0, ref best, ref bestDir);
+                CheckDirSync(x, y, -1, 0, ref best, ref bestDir);
+                CheckDirSync(x, y, 0, 1, ref best, ref bestDir);
+                CheckDirSync(x, y, 0, -1, ref best, ref bestDir);
+                CheckDirSync(x, y, 1, 1, ref best, ref bestDir);
+                CheckDirSync(x, y, 1, -1, ref best, ref bestDir);
+                CheckDirSync(x, y, -1, 1, ref best, ref bestDir);
+                CheckDirSync(x, y, -1, -1, ref best, ref bestDir);
 
                 flow[x, y] = bestDir;
+                nFlow[ToIndex(x, y)] = new float2(bestDir.x, bestDir.y);
             }
+        }
+    }
+
+    void CheckDirSync(int x, int y, int dx, int dy, ref int best, ref Vector2 bestDir)
+    {
+        int nx = x + dx;
+        int ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= gridW || ny >= gridH) return;
+        int nd = dist[nx, ny];
+        if (nd >= best) return;
+        best = nd;
+        bestDir = new Vector2(dx, dy).normalized;
+    }
+
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ ãƒ¦ãƒ¼ãƒ†ã‚£ãƒªãƒ†ã‚£ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    public bool WorldToCell(Vector2 world, out int gx, out int gy)
+    {
+        gx = Mathf.FloorToInt(world.x / cellSize) + centerX;
+        gy = Mathf.FloorToInt(world.y / cellSize) + centerY;
+        if (gx < 0 || gy < 0 || gx >= gridW || gy >= gridH) return false;
+        return true;
+    }
+
+    int ToIndex(int x, int y) => y * gridW + x;
+
+    void CopyNativeToManaged()
+    {
+        for (int y = 0; y < gridH; y++)
+        {
+            for (int x = 0; x < gridW; x++)
+            {
+                int idx = ToIndex(x, y);
+                dist[x, y] = nDist[idx];
+                var f = nFlow[idx];
+                flow[x, y] = new Vector2(f.x, f.y);
+            }
+        }
+    }
+
+    void ApplyPendingWrites()
+    {
+        if (pendingWrites.Count == 0) return;
+
+        foreach (var pw in pendingWrites)
+        {
+            // ç¯„å›²ãƒã‚§ãƒƒã‚¯ã ã‘ä¸€å¿œ
+            if (pw.gx < 0 || pw.gx >= gridW || pw.gy < 0 || pw.gy >= gridH)
+                continue;
+
+            blocked[pw.gx, pw.gy] = (pw.value == 1);
+            nBlocked[ToIndex(pw.gx, pw.gy)] = pw.value;
+        }
+
+        pendingWrites.Clear();
+    }
+
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Jobå®šç¾© â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    [BurstCompile]
+    struct DistanceFieldJob : IJob
+    {
+        public int width;
+        public int height;
+        public int targetX;
+        public int targetY;
+
+        [ReadOnly] public NativeArray<byte> blocked;
+        public NativeArray<int> dist;
+
+        public void Execute()
+        {
+            int total = width * height;
+            const int INF_LOCAL = 999999;
+            for (int i = 0; i < total; i++)
+                dist[i] = INF_LOCAL;
+
+            var q = new NativeQueue<int2>(Allocator.Temp);
+            dist[targetY * width + targetX] = 0;
+            q.Enqueue(new int2(targetX, targetY));
+
+            while (q.Count > 0)
+            {
+                var c = q.Dequeue();
+                int baseIdx = c.y * width + c.x;
+                int cd = dist[baseIdx];
+
+                // å³
+                if (c.x + 1 < width) TryVisit(c.x + 1, c.y, cd, ref q);
+                // å·¦
+                if (c.x - 1 >= 0) TryVisit(c.x - 1, c.y, cd, ref q);
+                // ä¸Š
+                if (c.y + 1 < height) TryVisit(c.x, c.y + 1, cd, ref q);
+                // ä¸‹
+                if (c.y - 1 >= 0) TryVisit(c.x, c.y - 1, cd, ref q);
+            }
+
+            q.Dispose();
+        }
+
+        void TryVisit(int x, int y, int cd, ref NativeQueue<int2> q)
+        {
+            int idx = y * width + x;
+            if (blocked[idx] == 1) return;
+            int nd = cd + 1;
+            if (dist[idx] <= nd) return;
+            dist[idx] = nd;
+            q.Enqueue(new int2(x, y));
+        }
+    }
+
+    [BurstCompile]
+    struct DirectionFieldJob : IJob
+    {
+        public int width;
+        public int height;
+
+        [ReadOnly] public NativeArray<byte> blocked;
+        [ReadOnly] public NativeArray<int> dist;
+        public NativeArray<float2> flow;
+
+        public void Execute()
+        {
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    int idx = y * width + x;
+                    if (blocked[idx] == 1)
+                    {
+                        flow[idx] = float2.zero;
+                        continue;
+                    }
+
+                    int best = dist[idx];
+                    float2 bestDir = float2.zero;
+
+                    CheckDir(x + 1, y, 1, 0, ref best, ref bestDir);
+                    CheckDir(x - 1, y, -1, 0, ref best, ref bestDir);
+                    CheckDir(x, y + 1, 0, 1, ref best, ref bestDir);
+                    CheckDir(x, y - 1, 0, -1, ref best, ref bestDir);
+                    CheckDir(x + 1, y + 1, 1, 1, ref best, ref bestDir);
+                    CheckDir(x + 1, y - 1, 1, -1, ref best, ref bestDir);
+                    CheckDir(x - 1, y + 1, -1, 1, ref best, ref bestDir);
+                    CheckDir(x - 1, y - 1, -1, -1, ref best, ref bestDir);
+
+                    flow[idx] = bestDir;
+                }
+            }
+        }
+
+        void CheckDir(int nx, int ny, int dx, int dy, ref int best, ref float2 bestDir)
+        {
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) return;
+
+            int idx = ny * width + nx;
+            int nd = dist[idx];
+            if (nd >= best) return;
+
+            best = nd;
+            float invLen = math.rsqrt(dx * dx + dy * dy);
+            bestDir = new float2(dx * invLen, dy * invLen);
         }
     }
 }
