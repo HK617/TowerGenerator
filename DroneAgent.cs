@@ -12,7 +12,7 @@ public class DroneAgent : MonoBehaviour
     bool _busy;
     DroneBuildManager _manager;
     DroneBuildManager.BuildJob _currentJob;
-    GameObject _progressBar;   // 実体
+    GameObject _progressBar;
     float _buildTime;
 
     public bool IsBusy => _busy;
@@ -29,14 +29,11 @@ public class DroneAgent : MonoBehaviour
         _buildTime = buildTime;
         _progressBar = progressBar;
 
-        // バーがあるなら前に出す
+        // バーをちゃんと前面に
         if (_progressBar != null)
         {
-            // たぶんゴーストの子になってるので、子のSpriteRendererを強制で前面へ
             foreach (var sr in _progressBar.GetComponentsInChildren<SpriteRenderer>(true))
-            {
-                sr.sortingOrder = 5000;  // かなり前
-            }
+                sr.sortingOrder = 5000;
         }
 
         StopAllCoroutines();
@@ -47,7 +44,7 @@ public class DroneAgent : MonoBehaviour
     {
         Vector3 target = _currentJob.worldPos + hoverOffset;
 
-        // 1) 指定位置へ移動
+        // 1) 目的地へ行く
         while ((transform.position - target).sqrMagnitude > arriveDistance * arriveDistance)
         {
             Vector3 dir = (target - transform.position).normalized;
@@ -55,7 +52,7 @@ public class DroneAgent : MonoBehaviour
             yield return null;
         }
 
-        // 2) 建築タイマー
+        // 2) 待機してバーを伸ばす
         float t = 0f;
         DroneProgressBar bar = null;
         if (_progressBar != null)
@@ -68,17 +65,19 @@ public class DroneAgent : MonoBehaviour
             if (bar != null)
                 bar.SetProgress(p);
 
-            // バーがカメラを向くように（2DでもZ回転しちゃったら戻す）
-            if (_progressBar != null && Camera.main != null)
-            {
+            // 2Dなので回転を固定
+            if (_progressBar != null)
                 _progressBar.transform.rotation = Quaternion.identity;
-            }
 
             yield return null;
         }
 
-        // 3) 完了報告
+        // 3) マネージャに「終わったよ」と送る
         _manager.NotifyDroneJobFinished(_currentJob);
+
+        // 4) バーはここで必ず消す
+        if (_progressBar != null)
+            Destroy(_progressBar);
 
         _busy = false;
     }

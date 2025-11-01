@@ -270,29 +270,40 @@ public class BuildPlacement : MonoBehaviour
         }
     }
 
-    // ドローンが終わったときに呼ばれる
+    // ドローンが完了したときに呼ぶ、六角(ビッグ)セル用の軽量完成処理
+    // DestroyもInstantiateもせずに、最初に置いたゴーストを“完成形”にするだけ。
+    // Base生成とかFlowFieldの重い処理は DroneBuildManager 側で後からやる。
     public void FinalizeBigPlacement(BuildingDef def, Vector3Int cell, Vector3 pos, GameObject ghost)
     {
-        // ghostを本物に差し替え
+        if (def == null) return;
+
         if (ghost != null)
-            Destroy(ghost);
-
-        var go = Instantiate(def.prefab, pos, Quaternion.identity, prefabParent);
-        _placedByCell[cell] = go;
-
-        // Base置きたいとき
-        if (def.isHexTile)
         {
-            var ui = Object.FindFirstObjectByType<StartMenuUI>();
-            if (ui != null)
-            {
-                bool spawned = ui.TrySpawnBaseAt(pos);
-                if (spawned)
-                    _protectedCells.Add(cell);
-            }
+            // 1) ゴーストの色を元に戻す
+            SetSpriteColor(ghost.transform, Color.white);
+
+            // 2) Colliderを有効化（ゴーストを作るときに全部OFFにしている前提）
+            foreach (var c in ghost.GetComponentsInChildren<Collider2D>(true))
+                c.enabled = true;
+            foreach (var c in ghost.GetComponentsInChildren<Collider>(true))
+                c.enabled = true;
+
+            // 3) 念のため位置を合わせる
+            ghost.transform.position = pos;
+
+            // 4) 配置済みマップに登録
+            _placedByCell[cell] = ghost;
+        }
+        else
+        {
+            // ゴーストが何らかで失われたときのフォールバック
+            var go = Instantiate(def.prefab, pos, Quaternion.identity, prefabParent);
+            _placedByCell[cell] = go;
         }
 
-        // 六角はFlowField考えなくてもよければここは空でOK
+        // ★ここには重い処理は書かない
+        // Baseを置く・FlowFieldをRebuildするなどは
+        // DroneBuildManager.NotifyDroneJobFinished(...) 側の heavy キューで少しずつやる
     }
 
     void DeleteAtBig(Vector3Int cell)
@@ -380,25 +391,27 @@ public class BuildPlacement : MonoBehaviour
     }
 
     // ドローン完了時に呼ばれる
+    // ドローンが終わったときに呼ばれる・軽い版（細かいグリッド）
     public void FinalizeFinePlacement(BuildingDef def, Vector2Int fcell, Vector3 pos, GameObject ghost)
     {
-        if (ghost != null)
-            Destroy(ghost);
+        if (ghost == null) return;
 
-        var real = Instantiate(def.prefab, pos, Quaternion.identity, prefabParent);
+        // ゴースト → 本物化
+        SetSpriteColor(ghost.transform, Color.white);
+        foreach (var c in ghost.GetComponentsInChildren<Collider2D>(true)) c.enabled = true;
+        foreach (var c in ghost.GetComponentsInChildren<Collider>(true)) c.enabled = true;
+        ghost.transform.position = pos;
 
-        // ghostで予約していたセルを、realに差し替える
-        var keys = new List<Vector2Int>();
+        // 予約セルをこのオブジェクトに差し替える
+        var tmp = new List<Vector2Int>();
         foreach (var kv in _placedFine)
-        {
             if (kv.Value == ghost)
-                keys.Add(kv.Key);
-        }
-        foreach (var k in keys)
-            _placedFine[k] = real;
+                tmp.Add(kv.Key);
+        foreach (var k in tmp)
+            _placedFine[k] = ghost;
 
-        // FlowFieldにブロックを登録
-        if (flowField != null)
+        // ★ここを追加する★
+        if (flowField != null && def != null)
             RegisterBuildingToFlowField(def, pos, true);
     }
 

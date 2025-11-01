@@ -10,13 +10,18 @@ public class DroneBuildManager : MonoBehaviour
     public Transform droneSpawnPoint;
 
     [Header("Build")]
-    [Tooltip("1建築にかける時間(秒)")]
     public float buildTime = 1.5f;
-
-    [Tooltip("ゴーストの子にぶら下げる進捗バーPrefab")]
     public GameObject progressBarPrefab;
 
-    readonly Queue<BuildJob> _jobs = new Queue<BuildJob>();
+    // ドローンが回るジョブ
+    readonly Queue<BuildJob> _jobs = new();
+
+    // 完成後にゆっくりやる処理
+    readonly Queue<System.Action> _heavy = new();
+
+    [Tooltip("1フレームに実行する重い処理の数")]
+    public int heavyPerFrame = 1;
+
     DroneAgent _drone;
 
     void Awake()
@@ -30,90 +35,107 @@ public class DroneBuildManager : MonoBehaviour
 
         if (dronePrefab != null)
         {
-            Vector3 spawn = droneSpawnPoint ? droneSpawnPoint.position : Vector3.zero;
-            _drone = Instantiate(dronePrefab, spawn, Quaternion.identity);
+            Vector3 p = droneSpawnPoint ? droneSpawnPoint.position : Vector3.zero;
+            _drone = Instantiate(dronePrefab, p, Quaternion.identity);
             _drone.name = "DroneAgent";
         }
     }
 
     void Start()
     {
-        // ← これが「常にキューを見てる」ループ
-        StartCoroutine(WorkerLoop());
+        StartCoroutine(Worker());
     }
 
-    System.Collections.IEnumerator WorkerLoop()
+    void Update()
+    {
+        // 重い処理をゆっくり流す
+        int budget = heavyPerFrame;
+        while (budget-- > 0 && _heavy.Count > 0)
+        {
+            var a = _heavy.Dequeue();
+            a?.Invoke();
+        }
+    }
+
+    System.Collections.IEnumerator Worker()
     {
         while (true)
         {
             if (_drone != null && !_drone.IsBusy && _jobs.Count > 0)
-            {
-                StartNextJob();
-            }
+                StartNext();
             yield return null;
         }
     }
 
-    void StartNextJob()
+    void StartNext()
     {
-        if (_drone == null) return;
-        if (_drone.IsBusy) return;
-        if (_jobs.Count == 0) return;
-
         var job = _jobs.Dequeue();
 
         GameObject bar = null;
         if (progressBarPrefab != null && job.ghost != null)
         {
-            // ゴーストの子に付ける
             bar = Instantiate(progressBarPrefab, job.ghost.transform);
-            bar.transform.localPosition = new Vector3(0, 1.0f, 0);
+            bar.transform.localPosition = new Vector3(0, 1f, 0);
         }
 
         _drone.StartBuildJob(job, this, buildTime, bar);
     }
 
-    // ===== Publish API =====
-    public void EnqueueFineBuild(BuildPlacement source, BuildingDef def, Vector2Int fineCell, Vector3 worldPos, GameObject ghost)
+    // ===== enqueue =====
+    public void EnqueueFineBuild(BuildPlacement src, BuildingDef def, Vector2Int cell, Vector3 pos, GameObject ghost)
     {
         _jobs.Enqueue(new BuildJob
         {
-            source = source,
+            source = src,
             def = def,
             isFine = true,
-            fineCell = fineCell,
+            fineCell = cell,
             bigCell = default,
-            worldPos = worldPos,
+            worldPos = pos,
             ghost = ghost,
         });
     }
 
-    public void EnqueueBigBuild(BuildPlacement source, BuildingDef def, Vector3Int bigCell, Vector3 worldPos, GameObject ghost)
+    public void EnqueueBigBuild(BuildPlacement src, BuildingDef def, Vector3Int cell, Vector3 pos, GameObject ghost)
     {
         _jobs.Enqueue(new BuildJob
         {
-            source = source,
+            source = src,
             def = def,
             isFine = false,
             fineCell = default,
-            bigCell = bigCell,
-            worldPos = worldPos,
+            bigCell = cell,
+            worldPos = pos,
             ghost = ghost,
         });
     }
 
-    // ドローンが終わったときに呼ぶ
+    // ===== ドローン → マネージャ =====
     public void NotifyDroneJobFinished(BuildJob job)
     {
+        // ここでは "超軽い完成処理" だけやる
         if (job.isFine)
             job.source.FinalizeFinePlacement(job.def, job.fineCell, job.worldPos, job.ghost);
         else
             job.source.FinalizeBigPlacement(job.def, job.bigCell, job.worldPos, job.ghost);
 
-        // ここで何もせずとも WorkerLoop が次を勝手に拾う
+        // 重いかもしれないところは後で
+        _heavy.Enqueue(() =>
+        {
+            // 六角でBaseを探すやつとか、FlowFieldのRebuildとかをここに
+            if (!job.isFine && job.def != null && job.def.isHexTile)
+            {
+                var ui = Object.FindFirstObjectByType<StartMenuUI>();
+                if (ui != null)
+                    ui.TrySpawnBaseAt(job.worldPos);
+            }
+
+            // FlowFieldを「全部終わってから1回だけ」呼びたいなら
+            // ここでカウンタ管理してもいい
+        });
     }
 
-    // ====== データ構造 ======
+    // ====== struct ======
     public struct BuildJob
     {
         public BuildPlacement source;
