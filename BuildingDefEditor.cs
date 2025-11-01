@@ -50,8 +50,8 @@ public class BuildingDefEditor : Editor
 
         // グリッドサイズ選択：偶数も含める
         int currentSize = def.shape != null ? def.shape.GetLength(0) : 3;
-        int[] sizeOptions = { 2, 3, 4, 5, 6, 7, 8, 9 };
-        string[] sizeLabels = { "2×2", "3×3", "4×4", "5×5", "6×6", "7×7", "8×8", "9×9" };
+        int[] sizeOptions = { 2, 3, 4, 5, 6, 7, 8, 9, 20};
+        string[] sizeLabels = { "2×2", "3×3", "4×4", "5×5", "6×6", "7×7", "8×8", "9×9", "20×20" };
         int newSize = EditorGUILayout.IntPopup("Grid Size", currentSize, sizeLabels, sizeOptions);
 
         if (newSize != currentSize)
@@ -81,6 +81,9 @@ public class BuildingDefEditor : Editor
     void ResizeShape(int newSize)
     {
         def.shape = new bool[newSize, newSize];
+        for (int y = 0; y < newSize; y++)
+            for (int x = 0; x < newSize; x++)
+                def.shape[x, y] = true;   // ← 最初から全部ブロックにする
         EditorUtility.SetDirty(def);
     }
 
