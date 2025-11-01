@@ -1,28 +1,64 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
+/// <summary>
+/// ① 起動時に固定数のドローンを生成して持っておく
+/// ② 建築タスクが来たら、Idleなドローンに渡す（いなければキューにためる）
+/// ③ ドローンが終わったらIdleに戻す
+/// ④ 左UIには「存在しているドローンたち」を常に送る
+/// ⑤ 旧DroneAgent用の互換口も残す
+/// </summary>
 public class DroneBuildManager : MonoBehaviour
 {
     public static DroneBuildManager Instance { get; private set; }
 
-    [Header("Drone")]
-    public DroneAgent dronePrefab;
+    [Header("Fixed drone pool")]
+    [Tooltip("最初に何体生成しておくか")]
+    public int initialDroneCount = 3;
+
+    [Tooltip("プール用のドローンプレハブ（DroneWorkerが付いていること）")]
+    public DroneWorker dronePrefab;
+
+    [Tooltip("ドローンの出発位置")]
     public Transform droneSpawnPoint;
 
-    [Header("Build")]
-    public float buildTime = 1.5f;
-    public GameObject progressBarPrefab;
+    [Header("Task settings")]
+    public int maxQueuedTasks = 64;
 
-    // ドローンが回るジョブ
-    readonly Queue<BuildJob> _jobs = new();
+    // タスク（建築依頼）
+    public enum TaskKind { Big, Fine }
 
-    // 完成後にゆっくりやる処理
-    readonly Queue<System.Action> _heavy = new();
+    [Serializable]
+    public class BuildTask
+    {
+        public TaskKind kind;
+        public BuildPlacement placer;
+        public BuildingDef def;
+        public GameObject ghost;
 
-    [Tooltip("1フレームに実行する重い処理の数")]
-    public int heavyPerFrame = 1;
+        public Vector3Int bigCell;
+        public Vector3 worldPos;
 
-    DroneAgent _drone;
+        public Vector2Int fineCell;
+    }
+
+    // 旧コード互換
+    [Serializable]
+    public class BuildJob : BuildTask { }
+
+    // タスクを待たせておく
+    readonly Queue<BuildTask> _queue = new Queue<BuildTask>();
+
+    // いま存在している常駐ドローンたち
+    readonly List<DroneWorker> _drones = new List<DroneWorker>();
+
+    /// <summary>
+    /// UIが購読するイベント
+    /// 第一引数: 現在存在しているドローンのリスト（常に同じ数）
+    /// 第二引数: 現在の待機タスク数などを見たい時に使うが、ここでは空でOK
+    /// </summary>
+    public event Action<List<DroneWorker>, int> OnDroneStateChanged;
 
     void Awake()
     {
@@ -32,118 +68,182 @@ public class DroneBuildManager : MonoBehaviour
             return;
         }
         Instance = this;
-
-        if (dronePrefab != null)
-        {
-            Vector3 p = droneSpawnPoint ? droneSpawnPoint.position : Vector3.zero;
-            _drone = Instantiate(dronePrefab, p, Quaternion.identity);
-            _drone.name = "DroneAgent";
-        }
     }
 
     void Start()
     {
-        StartCoroutine(Worker());
+        // 常駐ドローン生成
+        SpawnInitialDrones();
+        NotifyUI();
     }
 
     void Update()
     {
-        // 重い処理をゆっくり流す
-        int budget = heavyPerFrame;
-        while (budget-- > 0 && _heavy.Count > 0)
+        // 空いてるドローンがあればタスクを渡す
+        TryDispatchTasks();
+    }
+
+    void SpawnInitialDrones()
+    {
+        if (dronePrefab == null)
         {
-            var a = _heavy.Dequeue();
-            a?.Invoke();
+            Debug.LogError("[DroneBuildManager] dronePrefab が設定されていません。");
+            return;
+        }
+
+        for (int i = 0; i < initialDroneCount; i++)
+        {
+            Vector3 pos = droneSpawnPoint ? droneSpawnPoint.position : transform.position;
+            var d = Instantiate(dronePrefab, pos, Quaternion.identity);
+            d.manager = this;
+            d.name = $"Drone_{i + 1}";
+            _drones.Add(d);
         }
     }
 
-    System.Collections.IEnumerator Worker()
+    // =========================
+    // BuildPlacement から呼ばれるやつ
+    // =========================
+    public void EnqueueBigBuild(BuildPlacement placer, BuildingDef def, Vector3Int cell, Vector3 pos, GameObject ghost)
     {
-        while (true)
+        var t = new BuildTask
         {
-            if (_drone != null && !_drone.IsBusy && _jobs.Count > 0)
-                StartNext();
-            yield return null;
-        }
-    }
-
-    void StartNext()
-    {
-        var job = _jobs.Dequeue();
-
-        GameObject bar = null;
-        if (progressBarPrefab != null && job.ghost != null)
-        {
-            bar = Instantiate(progressBarPrefab, job.ghost.transform);
-            bar.transform.localPosition = new Vector3(0, 1f, 0);
-        }
-
-        _drone.StartBuildJob(job, this, buildTime, bar);
-    }
-
-    // ===== enqueue =====
-    public void EnqueueFineBuild(BuildPlacement src, BuildingDef def, Vector2Int cell, Vector3 pos, GameObject ghost)
-    {
-        _jobs.Enqueue(new BuildJob
-        {
-            source = src,
+            kind = TaskKind.Big,
+            placer = placer,
             def = def,
-            isFine = true,
-            fineCell = cell,
-            bigCell = default,
-            worldPos = pos,
-            ghost = ghost,
-        });
-    }
-
-    public void EnqueueBigBuild(BuildPlacement src, BuildingDef def, Vector3Int cell, Vector3 pos, GameObject ghost)
-    {
-        _jobs.Enqueue(new BuildJob
-        {
-            source = src,
-            def = def,
-            isFine = false,
-            fineCell = default,
             bigCell = cell,
             worldPos = pos,
-            ghost = ghost,
-        });
+            ghost = ghost
+        };
+
+        EnqueueTask(t);
     }
 
-    // ===== ドローン → マネージャ =====
-    public void NotifyDroneJobFinished(BuildJob job)
+    public void EnqueueFineBuild(BuildPlacement placer, BuildingDef def, Vector2Int cell, Vector3 pos, GameObject ghost)
     {
-        // ここでは "超軽い完成処理" だけやる
-        if (job.isFine)
-            job.source.FinalizeFinePlacement(job.def, job.fineCell, job.worldPos, job.ghost);
-        else
-            job.source.FinalizeBigPlacement(job.def, job.bigCell, job.worldPos, job.ghost);
-
-        // 重いかもしれないところは後で
-        _heavy.Enqueue(() =>
+        var t = new BuildTask
         {
-            // 六角でBaseを探すやつとか、FlowFieldのRebuildとかをここに
-            if (!job.isFine && job.def != null && job.def.isHexTile)
-            {
-                var ui = Object.FindFirstObjectByType<StartMenuUI>();
-                if (ui != null)
-                    ui.TrySpawnBaseAt(job.worldPos);
-            }
+            kind = TaskKind.Fine,
+            placer = placer,
+            def = def,
+            fineCell = cell,
+            worldPos = pos,
+            ghost = ghost
+        };
 
-            // FlowFieldを「全部終わってから1回だけ」呼びたいなら
-            // ここでカウンタ管理してもいい
-        });
+        EnqueueTask(t);
     }
 
-    // ====== struct ======
-    public struct BuildJob
+    void EnqueueTask(BuildTask t)
     {
-        public BuildPlacement source;
-        public BuildingDef def;
-        public bool isFine;
-        public Vector2Int fineCell;
-        public Vector3Int bigCell;
-        public Vector3 worldPos;
-        public GameObject ghost;
+        if (_queue.Count >= maxQueuedTasks)
+        {
+            Debug.LogWarning("[DroneBuildManager] queue is full.");
+            return;
+        }
+        _queue.Enqueue(t);
+        TryDispatchTasks();
+        NotifyUI();
+    }
+
+    // 空いてるドローンにタスクを渡す
+    void TryDispatchTasks()
+    {
+        if (_queue.Count == 0) return;
+
+        foreach (var drone in _drones)
+        {
+            if (!drone.IsIdle) continue;
+            if (_queue.Count == 0) break;
+
+            var task = _queue.Dequeue();
+            drone.SetTask(task); // ドローン側に渡す
+        }
+
+        NotifyUI();
+    }
+
+    // ドローンから「終わった」と言われたとき
+    public void NotifyDroneFinished(DroneWorker worker, BuildTask task, bool success = true)
+    {
+        if (success && task != null)
+        {
+            try
+            {
+                FinalizeTask(task);
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogWarning("[DroneBuildManager] FinalizeTask failed: " + ex.Message);
+                // 失敗したのでキューに戻す
+                _queue.Enqueue(task);
+            }
+        }
+        else if (!success && task != null)
+        {
+            // もう一回やらせる。嫌ならここで捨てるでもOK
+            _queue.Enqueue(task);
+        }
+
+        // 終わったのでまた別のタスクを振る
+        TryDispatchTasks();
+        NotifyUI();
+    }
+
+    void FinalizeTask(BuildTask task)
+    {
+        switch (task.kind)
+        {
+            case TaskKind.Big:
+                task.placer?.FinalizeBigPlacement(task.def, task.bigCell, task.worldPos, task.ghost);
+                break;
+            case TaskKind.Fine:
+                task.placer?.FinalizeFinePlacement(task.def, task.fineCell, task.worldPos, task.ghost);
+                break;
+        }
+    }
+
+    // =========================
+    // 旧 DroneAgent 互換
+    // =========================
+
+    public BuildJob PopLegacyJob()
+    {
+        if (_queue.Count == 0) return null;
+        var t = _queue.Dequeue();
+        var j = new BuildJob
+        {
+            kind = t.kind,
+            placer = t.placer,
+            def = t.def,
+            ghost = t.ghost,
+            bigCell = t.bigCell,
+            worldPos = t.worldPos,
+            fineCell = t.fineCell
+        };
+        NotifyUI();
+        return j;
+    }
+
+    public void NotifyDroneJobFinished(DroneBuildManager.BuildJob job)
+    {
+        NotifyDroneJobFinished(null, job, true);
+    }
+
+    public void NotifyDroneJobFinished(object agent, DroneBuildManager.BuildJob job, bool success = true)
+    {
+        if (success && job != null) FinalizeTask(job);
+        else if (!success && job != null) _queue.Enqueue(job);
+
+        TryDispatchTasks();
+        NotifyUI();
+    }
+
+    // =========================
+    // UI に渡す
+    // =========================
+    void NotifyUI()
+    {
+        OnDroneStateChanged?.Invoke(new List<DroneWorker>(_drones), _queue.Count);
     }
 }
