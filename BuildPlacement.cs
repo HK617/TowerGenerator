@@ -9,6 +9,9 @@ using Unity.Cinemachine;
 
 public class BuildPlacement : MonoBehaviour
 {
+    // プレビュー中など「建築を一時的に禁止」するためのフラグ
+    public static bool s_buildLocked = false;
+
     [Header("=== Common targets ===")]
     public Grid grid;
     public Transform prefabParent;
@@ -58,9 +61,6 @@ public class BuildPlacement : MonoBehaviour
 
     // Base が実際に「完成」したかどうか（ドローンで建て終わった時点で true）
     public static bool s_baseBuilt = false;
-    // ★追加：Baseのワールド座標を他のスクリプトに渡すための共有変数
-    public static Vector3 s_baseWorld;
-    public static bool s_hasBaseWorld = false;
 
     // 連続設置中かどうか
     bool _isDragging = false;
@@ -97,6 +97,13 @@ public class BuildPlacement : MonoBehaviour
 
     void Update()
     {
+        // ★ プレビュー中は建築しない
+        if (s_buildLocked)
+        {
+            UpdatePointerActive(false, false);
+            ClearPreview();    // あなたの実装にあるならこれを呼ぶ、なければ消していい
+            return;
+        }
         if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
         {
             UpdatePointerActive(false, false);
@@ -184,7 +191,6 @@ public class BuildPlacement : MonoBehaviour
                     DeleteAtFine(fineCell, finalCenter);
                 }
             }
-
             return;
         }
         else
@@ -286,16 +292,13 @@ public class BuildPlacement : MonoBehaviour
             var go = Instantiate(defToPlace.prefab, pos, Quaternion.identity, prefabParent);
             _placedByCell[cell] = go;
 
+            // Base なら壊せないように
             if (isFirstBase)
-            {
-                // Base なら壊せないように
                 _protectedCells.Add(cell);
 
-                // ★ここで「Baseができた」と「どこにあるか」を記録する
+            // 完成と同時に「Baseできたよ」を通知
+            if (isFirstBase)
                 s_baseBuilt = true;
-                s_baseWorld = pos;
-                s_hasBaseWorld = true;
-            }
 
             // もし前の方式で StartMenuUI にも伝えたいならここで
             var ui = Object.FindFirstObjectByType<StartMenuUI>();
@@ -306,13 +309,7 @@ public class BuildPlacement : MonoBehaviour
 
             // FlowField も更新したいならここで
             if (flowField != null)
-            {
-                // ★Baseの位置をFlowFieldにも渡す（もともとやってるならそれでOK）
-                if (isFirstBase)
-                    flowField.SetTargetWorld(pos);
-
                 RegisterBuildingToFlowField(defToPlace, pos, true);
-            }
         }
     }
 
@@ -330,10 +327,6 @@ public class BuildPlacement : MonoBehaviour
         {
             s_baseBuilt = true;
             _protectedCells.Add(cell);
-
-            // ★ここで静的に場所を覚える
-            s_baseWorld = pos;
-            s_hasBaseWorld = true;
 
             // FlowField のゴールをここにする
             if (flowField != null)

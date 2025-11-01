@@ -4,310 +4,347 @@ using UnityEngine.Tilemaps;
 
 public class EnemySpawnerRaid : MonoBehaviour
 {
-    [Header("Scene References")]
+    [Header("Scene refs")]
     public Grid grid;
     public Tilemap groundTilemap;
-    public FlowField025 flowField;
 
-    [Header("Who to spawn")]
+    [Header("Enemy to spawn (real raid)")]
     public GameObject enemyPrefab;
 
-    [Header("Distance from Base (tiles)")]
+    [Header("Spawn pointer (always visible)")]
+    [Tooltip("次のレイドで敵が湧く予定地に常時表示するポインター")]
+    public GameObject spawnPointerPrefab;
+    [Tooltip("スポーン予定地を決めるときに距離の基準にするPlaceableのレイヤー")]
+    public LayerMask placeableLayerMask;
+    [Tooltip("1回のレイドで何か所から湧かせるか")]
+    public int sitesPerRaid = 4;
+    [Tooltip("基地から最低何タイル離すか")]
     public int minDistanceInTiles = 6;
-    public int maxDistanceInTiles = 12;
+    [Tooltip("スポーン地点を探すときの試行回数上限(1サイトあたり)")]
+    public int maxAttemptsPerSite = 60;
+    [Tooltip("そのタイルに地面タイルが無いときは候補にしない")]
+    public bool requireGroundTile = true;
+    [Tooltip("六角に近い距離を使うか")]
+    public bool useHexLikeCellDistance = true;
+    [Tooltip("スポーン予定地どうしの最小距離(ワールド)")]
+    public float minEnemySeparationWorld = 0.8f;
 
-    [Header("Spawn site settings")]
-    public int maxSpawnSitesPerRaid = 3;
-    public int enemiesPerSite = 3;
-    public float jitterWorld = 0.35f;
-    public int maxAttemptsPerSite = 40;
-    public float minEnemySeparationWorld = 1.2f;
+    // 1つの予定地を保持するための小さなクラス
+    class SpawnSite
+    {
+        public Vector3 worldPos;   // この世界座標から湧かせる
+        public GameObject pointerGO; // 表示しているポインター
+    }
+    // 「次のレイドで使う予定地」を常にここに持つ
+    readonly List<SpawnSite> _currentSites = new();
 
-    [Header("Raid control")]
-    public bool raid = false;
+    [Header("Preview (flow-field line)")]
+    [Tooltip("これに沿ってプレビューランナーを走らせる")]
+    public FlowField025 flowField;
+    [Tooltip("Collider + LineRenderer がついたプレハブ")]
+    public GameObject pathPreviewRunnerPrefab;
+    [Tooltip("プレビューランナーが回避すべき障害物のレイヤー")]
+    public LayerMask previewObstacleMask;
+    [Tooltip("プレビュー用のスピード倍率")]
+    public float previewRunnerSpeedMul = 1.5f;
+
+    // プレビュー中に作ったランナーをすべて保持する（ゴール済みも含む）
+    readonly List<PathPreviewRunner> _previewRunnersAll = new();
+    // 「まだ走っている」ランナーだけ知りたいときに使う（なくてもいい）
+    readonly List<PathPreviewRunner> _previewRunnersActive = new();
+
+    bool _previewMode = false;
+
+    [Header("Raid timing (real enemies)")]
     public bool autoRaidEnabled = true;
     public float initialRaidDelaySeconds = 5f;
     public float raidIntervalSeconds = 60f;
+    [Tooltip("Baseが設置されてからでなければ自動レイドをしない")]
     public bool requireBaseBeforeRaid = true;
 
-    [Header("Preview")]
-    public GameObject spawnPreviewPrefab;
-    public float previewLifeSeconds = 3f;
-    public bool previewDrawPath = true;
-
-    [Header("Placeable check")]
-    public LayerMask placeableLayerMask = 0;
-
-    bool _raidConsumed = false;
-    readonly List<Vector3> _spawnedSitesThisRaid = new();
+    void Awake()
+    {
+        if (!grid) grid = FindObjectOfType<Grid>();
+    }
 
     void Start()
     {
-        if (autoRaidEnabled && raidIntervalSeconds > 0f)
-        {
-            InvokeRepeating(nameof(TriggerRaid),
-                Mathf.Max(0f, initialRaidDelaySeconds),
-                raidIntervalSeconds);
-        }
+        // 起動時に「次のレイドの予定地」を決めておく
+        RebuildNextRaidSitesAndPointers();
+
+        // 本物のレイドは時間で発生
+        ScheduleAutoRaid();
+    }
+
+    void OnDisable()
+    {
+        CancelInvoke(nameof(TriggerRaid));
     }
 
     void Update()
     {
-        if (!enemyPrefab || !grid)
+        // ここではInputは見ない。PreviewRaidInputやUIボタンから TogglePreview() を呼んでもらう
+    }
+
+    // ==========================
+    //  公開API: プレビューON/OFF
+    // ==========================
+    public void TogglePreview()
+    {
+        if (_previewMode)
+            StopPreview();
+        else
+            StartPreview();
+    }
+
+    void StartPreview()
+    {
+        if (_previewMode) return;
+
+        if (flowField == null || pathPreviewRunnerPrefab == null)
+        {
+            Debug.LogWarning("[EnemySpawnerRaid] Preview開始できません(flowField or runnerPrefab が未設定)");
             return;
+        }
 
-        // Baseが必要で、まだ置かれてないならやらない
-        if (requireBaseBeforeRaid && !BuildPlacement.s_baseBuilt)
+        if (_currentSites.Count == 0)
+        {
+            Debug.LogWarning("[EnemySpawnerRaid] Preview開始できません(予定地が0)");
             return;
-
-        if (raid && !_raidConsumed)
-        {
-            _raidConsumed = true;
-            SpawnForRaid();
-            raid = false;
-        }
-        else if (!raid)
-        {
-            _raidConsumed = false;
         }
 
-        if (autoRaidEnabled && raidIntervalSeconds > 0f && !IsInvoking(nameof(TriggerRaid)))
+        _previewMode = true;
+        // 建築ロックON
+        BuildPlacement.s_buildLocked = true;
+
+        _previewRunnersAll.Clear();
+        _previewRunnersActive.Clear();
+
+        // いま表示している「次回レイド予定地」からだけ走らせる
+        foreach (var site in _currentSites)
         {
-            InvokeRepeating(nameof(TriggerRaid),
-                Mathf.Max(0f, initialRaidDelaySeconds),
-                raidIntervalSeconds);
+            var go = Instantiate(pathPreviewRunnerPrefab, site.worldPos, Quaternion.identity);
+            var runner = go.GetComponent<PathPreviewRunner>();
+            if (runner != null)
+            {
+                runner.Init(flowField, previewObstacleMask, OnPreviewRunnerFinished);
+                runner.speed *= previewRunnerSpeedMul;
+
+                _previewRunnersAll.Add(runner);
+                _previewRunnersActive.Add(runner);
+            }
+            else
+            {
+                Debug.LogWarning("[EnemySpawnerRaid] runnerPrefabにPathPreviewRunnerが付いていません");
+                Destroy(go);
+            }
         }
-        else if (!autoRaidEnabled && IsInvoking(nameof(TriggerRaid)))
+
+        // 何も出せなかったらロックを戻す
+        if (_previewRunnersAll.Count == 0)
         {
-            CancelInvoke(nameof(TriggerRaid));
+            _previewMode = false;
+            BuildPlacement.s_buildLocked = false;
+        }
+    }
+
+    void StopPreview()
+    {
+        if (!_previewMode) return;
+
+        // プレビュー中に作ったランナーは「全部」ここで消す
+        foreach (var r in _previewRunnersAll)
+        {
+            if (r) Destroy(r.gameObject);
+        }
+        _previewRunnersAll.Clear();
+        _previewRunnersActive.Clear();
+
+        _previewMode = false;
+        BuildPlacement.s_buildLocked = false;
+    }
+
+    // ランナーから「ゴールしたよ」と通知が来る
+    void OnPreviewRunnerFinished(PathPreviewRunner r)
+    {
+        // 走り終わっただけならactiveから外すだけ。表示は残す。
+        _previewRunnersActive.Remove(r);
+        // ここではStopPreviewしない。ユーザーがTogglePreview()したときにだけ消す。
+    }
+
+    // ==========================
+    //  本物のレイド部分（プレビューとは無関係）
+    // ==========================
+    void ScheduleAutoRaid()
+    {
+        CancelInvoke(nameof(TriggerRaid));
+        if (autoRaidEnabled && raidIntervalSeconds > 0f)
+        {
+            float first = Mathf.Max(0f, initialRaidDelaySeconds);
+            InvokeRepeating(nameof(TriggerRaid), first, raidIntervalSeconds);
         }
     }
 
     public void TriggerRaid()
     {
+        // Baseがまだなら何もしない
         if (requireBaseBeforeRaid && !BuildPlacement.s_baseBuilt)
             return;
-        raid = true;
+
+        // 今持ってる予定地から本物の敵を湧かせる
+        DoRaidFromCurrentSites();
+
+        // レイドが終わったらすぐに「次のレイド用の場所」を決め直す
+        RebuildNextRaidSitesAndPointers();
     }
 
-    void SpawnForRaid()
+    void DoRaidFromCurrentSites()
     {
-        _spawnedSitesThisRaid.Clear();
-
-        // ★ここでBuildPlacementが覚えているBase座標を使う
-        Vector3 baseWorld = GetBaseWorldFromBuildPlacement();
-        var placeables = CollectPlaceables();
-
-        int sites = 0;
-        for (int i = 0; i < maxSpawnSitesPerRaid; i++)
+        if (enemyPrefab == null)
         {
-            if (TryPickSpawnCellNearBase(baseWorld, placeables, out var cell))
-            {
-                Vector3 worldCenter = CellToWorldCenter(cell);
-                if (TrySpawnAtWorld(worldCenter, baseWorld))
-                {
-                    _spawnedSitesThisRaid.Add(worldCenter);
-                    sites++;
-                }
-            }
-            else
-            {
-                // 見つからなかったらフォールバック（なくてもいい）
-                if (TryPickSpawnCellGlobal(placeables, out var cell2))
-                {
-                    Vector3 worldCenter = CellToWorldCenter(cell2);
-                    if (TrySpawnAtWorld(worldCenter, baseWorld))
-                    {
-                        _spawnedSitesThisRaid.Add(worldCenter);
-                        sites++;
-                    }
-                }
-            }
+            Debug.LogWarning("[EnemySpawnerRaid] enemyPrefabが未設定です。敵は出ません。");
+            return;
         }
 
-        if (sites == 0)
+        foreach (var site in _currentSites)
         {
-            Debug.LogWarning("[EnemySpawnerRaid] 近くにスポーンできるタイルがありませんでした。");
-        }
-    }
-
-    Vector3 GetBaseWorldFromBuildPlacement()
-    {
-        if (BuildPlacement.s_hasBaseWorld)
-            return BuildPlacement.s_baseWorld;
-
-        // 念のためのフォールバック
-        return Vector3.zero;
-    }
-
-    bool TrySpawnAtWorld(Vector3 centerWorld, Vector3 baseWorld)
-    {
-        foreach (var p in _spawnedSitesThisRaid)
-        {
-            if ((p - centerWorld).sqrMagnitude < (minEnemySeparationWorld * minEnemySeparationWorld))
-                return false;
-        }
-
-        if (spawnPreviewPrefab != null)
-        {
-            var go = Instantiate(spawnPreviewPrefab, centerWorld, Quaternion.identity);
-            var prev = go.GetComponent<SpawnPreviewToEnemy>();
-            if (prev != null)
+            // ここはあなたの元のロジックに合わせてください（敵の数など）
+            for (int i = 0; i < 3; i++)
             {
-                // ★ここでBaseの座標も渡す！
-                prev.Init(
-                    enemyPrefab,
-                    enemiesPerSite,
-                    jitterWorld,
-                    previewLifeSeconds,
-                    flowField,
-                    previewDrawPath,
-                    baseWorld,
-                    BuildPlacement.s_hasBaseWorld
-                );
-            }
-        }
-        else
-        {
-            // 従来どおり即スポーン
-            for (int i = 0; i < enemiesPerSite; i++)
-            {
-                Vector2 j = Random.insideUnitCircle * jitterWorld;
-                var pos = new Vector3(centerWorld.x + j.x, centerWorld.y + j.y, 0f);
+                Vector2 j = Random.insideUnitCircle * 0.25f;
+                var pos = site.worldPos + new Vector3(j.x, j.y, 0f);
                 Instantiate(enemyPrefab, pos, Quaternion.identity);
             }
         }
-
-        return true;
     }
 
-    bool TryPickSpawnCellNearBase(Vector3 baseWorld, List<Transform> placeables, out Vector3Int cell)
+    // ==========================
+    //  「次のレイド地点を決めてポインターを出す」
+    // ==========================
+    void RebuildNextRaidSitesAndPointers()
     {
-        cell = default;
-        if (grid == null || groundTilemap == null)
-            return false;
-
-        Vector3Int baseCell = grid.WorldToCell(baseWorld);
-        int attempts = Mathf.Max(1, maxAttemptsPerSite);
-
-        int minD = Mathf.Max(1, minDistanceInTiles);
-        int maxD = Mathf.Max(minD + 1, maxDistanceInTiles);
-
-        while (attempts-- > 0)
+        // 今のポインターは全部消す
+        foreach (var s in _currentSites)
         {
-            int r = Random.Range(minD, maxD + 1);
-            float ang = Random.Range(0f, Mathf.PI * 2f);
-            int cx = baseCell.x + Mathf.RoundToInt(r * Mathf.Cos(ang));
-            int cy = baseCell.y + Mathf.RoundToInt(r * Mathf.Sin(ang));
-            var c = new Vector3Int(cx, cy, 0);
+            if (s.pointerGO) Destroy(s.pointerGO);
+        }
+        _currentSites.Clear();
 
-            if (!groundTilemap.HasTile(c))
-                continue;
+        // placeableから「基準になる場所」を集める
+        var placeables = CollectPlaceables();
+        if (placeables.Count == 0) return;
 
-            Vector3 w = CellToWorldCenter(c);
+        int made = 0;
+        int safety = sitesPerRaid * maxAttemptsPerSite;
 
-            // FlowFieldの外は捨てる
-            if (flowField != null && !flowField.WorldToCell(w, out _, out _))
-                continue;
+        while (made < sitesPerRaid && safety-- > 0)
+        {
+            var anchor = placeables[Random.Range(0, placeables.Count)];
 
-            // 他サイトとの距離
-            bool tooClose = false;
-            foreach (var s in _spawnedSitesThisRaid)
+            if (TryPickSpawnCellFarFromPlaceables(anchor.position, placeables, out var cell))
             {
-                if ((s - w).sqrMagnitude < (minEnemySeparationWorld * minEnemySeparationWorld))
+                Vector3 center = grid.GetCellCenterWorld(cell);
+
+                // すでに決めたサイトと近すぎたらやり直し
+                bool tooClose = false;
+                foreach (var s in _currentSites)
                 {
-                    tooClose = true;
-                    break;
+                    if ((s.worldPos - center).sqrMagnitude < (minEnemySeparationWorld * minEnemySeparationWorld))
+                    {
+                        tooClose = true;
+                        break;
+                    }
                 }
+                if (tooClose) continue;
+
+                GameObject ptr = null;
+                if (spawnPointerPrefab != null)
+                {
+                    ptr = Instantiate(spawnPointerPrefab, center, Quaternion.identity);
+                }
+
+                _currentSites.Add(new SpawnSite
+                {
+                    worldPos = center,
+                    pointerGO = ptr
+                });
+
+                made++;
             }
-            if (tooClose)
-                continue;
-
-            // Placeableとの距離
-            if (!IsFarEnoughFromPlaceables(w, placeables, minD))
-                continue;
-
-            cell = c;
-            return true;
         }
-
-        return false;
     }
 
-    bool TryPickSpawnCellGlobal(List<Transform> placeables, out Vector3Int cell)
-    {
-        cell = default;
-        if (groundTilemap == null || grid == null)
-            return false;
-
-        BoundsInt b = groundTilemap.cellBounds;
-        int attempts = Mathf.Max(1, maxAttemptsPerSite);
-        int minD = Mathf.Max(1, minDistanceInTiles);
-
-        while (attempts-- > 0)
-        {
-            int cx = Random.Range(b.xMin, b.xMax);
-            int cy = Random.Range(b.yMin, b.yMax);
-            var c = new Vector3Int(cx, cy, 0);
-
-            if (!groundTilemap.HasTile(c))
-                continue;
-
-            Vector3 w = CellToWorldCenter(c);
-
-            if (flowField != null && !flowField.WorldToCell(w, out _, out _))
-                continue;
-
-            if (!IsFarEnoughFromPlaceables(w, placeables, minD))
-                continue;
-
-            cell = c;
-            return true;
-        }
-
-        return false;
-    }
-
-    bool IsFarEnoughFromPlaceables(Vector3 world, List<Transform> placeables, int minTiles)
-    {
-        if (placeables == null || placeables.Count == 0)
-            return true;
-
-        foreach (var p in placeables)
-        {
-            if (!p) continue;
-
-            Vector3 diff = world - p.position;
-            float dx = Mathf.Abs(diff.x) / grid.cellSize.x;
-            float dy = Mathf.Abs(diff.y) / grid.cellSize.y;
-            float tileDist = Mathf.Sqrt(dx * dx + dy * dy);
-            if (tileDist < minTiles)
-                return false;
-        }
-
-        return true;
-    }
-
+    // ==========================
+    //  補助: placeable検索 & スポーン候補決定
+    // ==========================
     List<Transform> CollectPlaceables()
     {
         int mask = placeableLayerMask.value;
         var result = new List<Transform>();
         var all = Object.FindObjectsByType<Transform>(FindObjectsSortMode.None);
+
         foreach (var t in all)
         {
             if (!t) continue;
             if (!t.gameObject.activeInHierarchy) continue;
             if (((1 << t.gameObject.layer) & mask) != 0)
+            {
                 result.Add(t);
+            }
         }
         return result;
     }
 
-    Vector3 CellToWorldCenter(Vector3Int cell)
+    bool TryPickSpawnCellFarFromPlaceables(Vector3 baseWorld, List<Transform> placeables, out Vector3Int cell)
     {
-        Vector3 w = grid.CellToWorld(cell);
-        w += (Vector3)grid.cellSize * 0.5f;
-        w.z = 0f;
-        return w;
+        var cs = grid.cellSize;
+        float cellDiag = Mathf.Max(0.01f, new Vector2(cs.x, cs.y).magnitude);
+
+        int attempts = maxAttemptsPerSite;
+        int minD = Mathf.Max(1, minDistanceInTiles);
+        int maxD = minD + 8;
+
+        while (attempts-- > 0)
+        {
+            int d = Random.Range(minD, maxD + 1);
+            float ang = Random.Range(0f, Mathf.PI * 2f);
+
+            var offset = new Vector3(Mathf.Cos(ang), Mathf.Sin(ang), 0f);
+            var candidateWorld = baseWorld + offset * (d * cellDiag * 0.72f);
+            var candidateCell = grid.WorldToCell(candidateWorld);
+
+            if (requireGroundTile && groundTilemap && !groundTilemap.HasTile(candidateCell))
+                continue;
+
+            bool ok = true;
+            foreach (var p in placeables)
+            {
+                var pc = grid.WorldToCell(p.position);
+                if (CellDistance(pc, candidateCell) < minD)
+                {
+                    ok = false; break;
+                }
+            }
+            if (!ok) continue;
+
+            cell = candidateCell;
+            return true;
+        }
+
+        cell = default;
+        return false;
+    }
+
+    int CellDistance(Vector3Int a, Vector3Int b)
+    {
+        int dx = b.x - a.x;
+        int dy = b.y - a.y;
+
+        if (!useHexLikeCellDistance)
+            return Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dy));
+
+        int adx = Mathf.Abs(dx);
+        int ady = Mathf.Abs(dy);
+        return Mathf.Max(adx, ady, Mathf.Abs(dx + dy));
     }
 }

@@ -36,6 +36,19 @@ public class FlowField025 : MonoBehaviour
     bool rebuildQueued = false;
     float nextJobCheckTime = 0f;
 
+    public bool IsGoalNear(Vector2 worldPos, float radius)
+    {
+        if (!hasTarget) return false;
+
+        // targetGX / targetGY はグリッド上のゴールなので、ワールドに戻す
+        float goalWx = (targetGX - centerX + 0.5f) * cellSize;
+        float goalWy = (targetGY - centerY + 0.5f) * cellSize;
+        Vector2 goalWorld = new Vector2(goalWx, goalWy);
+
+        return (worldPos - goalWorld).sqrMagnitude <= radius * radius;
+    }
+
+
     // ★ ジョブ中の書き込みを貯めておくバッファ
     struct PendingWrite
     {
