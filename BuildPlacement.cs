@@ -58,6 +58,9 @@ public class BuildPlacement : MonoBehaviour
 
     // Base が実際に「完成」したかどうか（ドローンで建て終わった時点で true）
     public static bool s_baseBuilt = false;
+    // ★追加：Baseのワールド座標を他のスクリプトに渡すための共有変数
+    public static Vector3 s_baseWorld;
+    public static bool s_hasBaseWorld = false;
 
     // 連続設置中かどうか
     bool _isDragging = false;
@@ -283,13 +286,16 @@ public class BuildPlacement : MonoBehaviour
             var go = Instantiate(defToPlace.prefab, pos, Quaternion.identity, prefabParent);
             _placedByCell[cell] = go;
 
-            // Base なら壊せないように
             if (isFirstBase)
+            {
+                // Base なら壊せないように
                 _protectedCells.Add(cell);
 
-            // 完成と同時に「Baseできたよ」を通知
-            if (isFirstBase)
+                // ★ここで「Baseができた」と「どこにあるか」を記録する
                 s_baseBuilt = true;
+                s_baseWorld = pos;
+                s_hasBaseWorld = true;
+            }
 
             // もし前の方式で StartMenuUI にも伝えたいならここで
             var ui = Object.FindFirstObjectByType<StartMenuUI>();
@@ -300,7 +306,13 @@ public class BuildPlacement : MonoBehaviour
 
             // FlowField も更新したいならここで
             if (flowField != null)
+            {
+                // ★Baseの位置をFlowFieldにも渡す（もともとやってるならそれでOK）
+                if (isFirstBase)
+                    flowField.SetTargetWorld(pos);
+
                 RegisterBuildingToFlowField(defToPlace, pos, true);
+            }
         }
     }
 
@@ -318,6 +330,10 @@ public class BuildPlacement : MonoBehaviour
         {
             s_baseBuilt = true;
             _protectedCells.Add(cell);
+
+            // ★ここで静的に場所を覚える
+            s_baseWorld = pos;
+            s_hasBaseWorld = true;
 
             // FlowField のゴールをここにする
             if (flowField != null)
