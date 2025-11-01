@@ -8,8 +8,8 @@ public class FlowField025 : MonoBehaviour
     public int gridW = 200;
     public int gridH = 200;
 
-    [Header("Target (optional)")]
-    public Transform baseTransform; // ← Baseをドラッグしておく
+    // --- 以前はここに baseTransform があって、それを(0,0)に見立てていましたが ---
+    // --- 今回は「あとからBaseの位置をもらう」方式に変えます                ---
 
     // 配列の中央を (0,0) にする
     int centerX;
@@ -18,6 +18,11 @@ public class FlowField025 : MonoBehaviour
     int[,] dist;
     Vector2[,] flow;
     bool[,] blocked;
+
+    // ★追加：現在のターゲット（=Base）のグリッド座標
+    bool hasTarget = false;
+    int targetGX;
+    int targetGY;
 
     void Awake()
     {
@@ -36,35 +41,59 @@ public class FlowField025 : MonoBehaviour
 
     // ---------- 外から呼ぶAPI ----------
 
-    // HexPerTileFineGrid から呼ばれる：「ここは歩ける」
+    // 「ここは歩ける」
     public void MarkWalkable(float wx, float wy)
     {
         if (!WorldToCell(new Vector2(wx, wy), out int gx, out int gy)) return;
         blocked[gx, gy] = false;
     }
 
-    // 建物を置いたときなどに使う：「ここはふさぐ」
+    // 「ここはふさぐ」
     public void MarkBlocked(float wx, float wy)
     {
         if (!WorldToCell(new Vector2(wx, wy), out int gx, out int gy)) return;
         blocked[gx, gy] = true;
     }
 
+    // ★追加：Baseが建ったときにここを呼んでもらう
+    public void SetTargetWorld(Vector2 worldPos)
+    {
+        if (!WorldToCell(worldPos, out int gx, out int gy))
+        {
+            Debug.LogWarning($"FlowField025: target out of range {worldPos}");
+            return;
+        }
+
+        targetGX = gx;
+        targetGY = gy;
+        hasTarget = true;
+
+        // もらったらすぐ再計算
+        Rebuild();
+    }
+
     // 敵が読むとき用
     public Vector2 GetFlowDir(Vector2 worldPos)
     {
-        // Baseを(0,0)に見立てる補正
-        if (baseTransform != null)
-            worldPos -= (Vector2)baseTransform.position;
-
+        // もう「Baseを(0,0)に見立てる」補正はしない
         if (!WorldToCell(worldPos, out int gx, out int gy))
             return Vector2.zero;
         return flow[gx, gy];
     }
 
-    // Hex 側で「全部並べたから再計算して」と呼ぶ
+    // 再計算
     public void Rebuild()
     {
+        // ターゲットがまだ決まってないなら何もしない
+        if (!hasTarget)
+        {
+            // flowをゼロで埋めておく
+            for (int x = 0; x < gridW; x++)
+                for (int y = 0; y < gridH; y++)
+                    flow[x, y] = Vector2.zero;
+            return;
+        }
+
         BuildDistanceField();
         BuildDirectionField();
     }
@@ -90,11 +119,13 @@ public class FlowField025 : MonoBehaviour
 
         var q = new Queue<Vector2Int>();
 
-        // Base は (0,0) → 中央セル
-        dist[centerX, centerY] = 0;
-        q.Enqueue(new Vector2Int(centerX, centerY));
+        // ★ここが今回一番大事なところ
+        // これまでは「中央セルをゴールにしていた」が、
+        // これからは「SetTargetWorld で渡されたセル」をゴールにする
+        dist[targetGX, targetGY] = 0;
+        q.Enqueue(new Vector2Int(targetGX, targetGY));
 
-        // 4近傍（必要なら8近傍でもOK）
+        // 4近傍
         Vector2Int[] dirs = {
             new Vector2Int( 1, 0),
             new Vector2Int(-1, 0),
@@ -123,7 +154,6 @@ public class FlowField025 : MonoBehaviour
 
     void BuildDirectionField()
     {
-        // 8方向を見て「自分より距離が小さい方向」を向く
         Vector2Int[] dirs8 = {
             new Vector2Int( 1, 0),
             new Vector2Int(-1, 0),

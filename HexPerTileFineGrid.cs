@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+﻿﻿using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Tilemaps;
 using Unity.Cinemachine;
@@ -73,6 +73,14 @@ public class HexPerTileFineGrid : MonoBehaviour
     [Tooltip("Buildable 判定に使う半径（タイル中心から）")]
     public float buildableCheckRadius = 0.1f;
 
+    // すでにこのworld位置の六角に細かいグリッドを生成しているかどうか
+    public bool HasFineAtWorld(Vector3 worldPos)
+    {
+        if (!hexTilemap) return false;
+        var cell = hexTilemap.WorldToCell(worldPos);
+        return _loadedParents.ContainsKey(cell);
+    }
+
     // -------- Internal --------
     readonly Dictionary<Vector3Int, Transform> _loadedParents = new();
     readonly HashSet<Vector3Int> _wanted = new();
@@ -133,7 +141,7 @@ public class HexPerTileFineGrid : MonoBehaviour
     }
 
     // ===== Create / Destroy =====
-    void CreateForCell(Vector3Int cell)
+    void CreateForCell(Vector3Int cell, bool force = false)
     {
         // すでに作ってあるなら何もしない
         if (_loadedParents.ContainsKey(cell)) return;
@@ -143,9 +151,8 @@ public class HexPerTileFineGrid : MonoBehaviour
         Vector3 center = hexTilemap.GetCellCenterWorld(cell);
 
         // Buildable フィルタがONなら、ここでスキップ
-        if (onlyBuildable)
+        if (onlyBuildable && !force)
         {
-            // 中心付近に Buildable がないなら敷かない
             bool hasBuildable = false;
             var hits = Physics2D.OverlapCircleAll((Vector2)center, buildableCheckRadius);
             foreach (var h in hits)
@@ -158,14 +165,12 @@ public class HexPerTileFineGrid : MonoBehaviour
             }
         }
 
-        // 親オブジェクトを作る（あとでトグルするときの塊）
+        // ここから下は今まで通り
         GameObject parentGO = new GameObject($"FineGrid_{cell.x}_{cell.y}");
         parentGO.transform.SetParent(transform, worldPositionStays: false);
-        parentGO.transform.position = Vector3.zero; // 子はワールド座標で置くのでここは0でOK
+        parentGO.transform.position = Vector3.zero;
         _loadedParents[cell] = parentGO.transform;
 
-        // 六角の実寸（ユーザーがInspectorで調整するやつ）
-        // pointy / flat にかかわらず「この六角をぜんぶ覆う矩形」を作りたいので、そのまま使う
         float width = hexWidth + edgeMarginX * 2f;
         float height = hexHeight + edgeMarginY * 2f;
 
@@ -174,29 +179,22 @@ public class HexPerTileFineGrid : MonoBehaviour
         float minY = center.y - height * 0.5f;
         float maxY = center.y + height * 0.5f;
 
-        // 今回のエラーの原因：fineSpacing → spacing を使う
         float step = (spacing > 0f) ? spacing : 0.25f;
 
-        // 六角の形に合わせた多角形を組んでおく（既存の関数を活用）
-        // これで「ちゃんと六角の中だけに並べる」ができます
         List<Vector2> hexPoly = BuildHexXY(
             center,
             (hexWidth * 0.5f),
             (hexHeight * 0.5f)
         );
 
-        // マスを並べる
         for (float y = minY; y <= maxY + 0.0001f; y += step)
         {
             for (float x = minX; x <= maxX + 0.0001f; x += step)
             {
-                // マスの中心で判定する
                 Vector2 p = new Vector2(x + step * 0.5f, y + step * 0.5f);
 
-                // 六角の中だけ敷き詰める
                 if (clipInsideHex && !InPoly(p, hexPoly)) continue;
 
-                // 表示用プレハブ
                 if (zoomGridPrefab != null)
                 {
                     var go = Instantiate(
@@ -206,7 +204,6 @@ public class HexPerTileFineGrid : MonoBehaviour
                         parentGO.transform
                     );
 
-                    // 並べるだけならここで色やレイヤーの調整もできる
                     if (!string.IsNullOrEmpty(sortingLayerName))
                     {
                         var sr = go.GetComponent<SpriteRenderer>();
@@ -214,7 +211,6 @@ public class HexPerTileFineGrid : MonoBehaviour
                     }
                 }
 
-                // ★ 案A：FlowFieldに「ここ歩ける」って登録
                 if (flowField != null)
                 {
                     flowField.MarkWalkable(p.x, p.y);
@@ -222,13 +218,19 @@ public class HexPerTileFineGrid : MonoBehaviour
             }
         }
 
-        // 六角1セルぶん終わったので必要ならリビルド
         if (flowField != null && rebuildAfterEachCell)
         {
             flowField.Rebuild();
         }
     }
 
+    // ★追加：外から「ここだけ強制で敷いて！」と呼ぶためのAPI
+    public void ForceCreateAtWorld(Vector3 worldPos)
+    {
+        if (!hexTilemap) return;
+        var cell = hexTilemap.WorldToCell(worldPos);
+        CreateForCell(cell, true);
+    }
 
     void SetActiveOrDestroy(Vector3Int cell, bool active)
     {

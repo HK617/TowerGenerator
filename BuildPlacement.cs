@@ -49,6 +49,16 @@ public class BuildPlacement : MonoBehaviour
     public bool useDroneBuild = true;
     public DroneBuildManager droneManager;
 
+    [Header("=== Base auto place ===")]
+    [Tooltip("最初の1回だけこれを建てる。ユーザーが別の建物を選んでいてもBaseになる")]
+    public BuildingDef baseDef;
+
+    [Tooltip("Baseと同時に下に敷く六角タイルの BuildingDef")]
+    public BuildingDef baseHexDef;
+
+    // Base が実際に「完成」したかどうか（ドローンで建て終わった時点で true）
+    public static bool s_baseBuilt = false;
+
     // 連続設置中かどうか
     bool _isDragging = false;
     readonly List<(Vector2Int cell, Vector3 center)> _previewCells = new();
@@ -233,40 +243,64 @@ public class BuildPlacement : MonoBehaviour
 
     void PlaceAtBig(Vector3Int cell)
     {
-        if (_current?.prefab == null) return;
+        // 何も選んでないなら置けない
+        if (_current?.prefab == null && (baseDef == null || s_baseBuilt))
+            return;
         if (!CanPlaceAtBig(cell)) return;
+
+        // ★ここがポイント：
+        // まだBaseが建っていないなら、ユーザーが何を選んでいても baseDef を建てる
+        BuildingDef defToPlace = _current;
+        bool isFirstBase = false;
+        if (!s_baseBuilt && baseDef != null)
+        {
+            defToPlace = baseDef;
+            isFirstBase = true;
+        }
+
+        if (defToPlace == null) return; // 念のため
 
         Vector3 pos = grid.GetCellCenterWorld(cell) + hoverOffset;
 
         if (useDroneBuild && droneManager != null)
         {
             // 1) ゴーストを置いて予約
-            GameObject ghost = Instantiate(_current.prefab, pos, Quaternion.identity, prefabParent);
+            GameObject ghost = Instantiate(defToPlace.prefab, pos, Quaternion.identity, prefabParent);
             DisableColliders(ghost.transform);
             SetSpriteColor(ghost.transform, new Color(1f, 1f, 1f, previewAlpha));
 
-            // 予約として辞書に入れておく（重複設置を防ぐ）
+            // 仮で占有。Baseなら壊せないようにする
             _placedByCell[cell] = ghost;
+            if (isFirstBase)
+                _protectedCells.Add(cell);
 
-            // 2) ドローンに依頼
-            droneManager.EnqueueBigBuild(this, _current, cell, pos, ghost);
+            // 2) ドローンに依頼（←ここで実際に建つ）
+            droneManager.EnqueueBigBuild(this, defToPlace, cell, pos, ghost);
         }
         else
         {
-            // これまで通り即時
-            var go = Instantiate(_current.prefab, pos, Quaternion.identity, prefabParent);
+            // ドローンを使わないときは即完成
+            var go = Instantiate(defToPlace.prefab, pos, Quaternion.identity, prefabParent);
             _placedByCell[cell] = go;
 
-            if (_current.isHexTile)
+            // Base なら壊せないように
+            if (isFirstBase)
+                _protectedCells.Add(cell);
+
+            // 完成と同時に「Baseできたよ」を通知
+            if (isFirstBase)
+                s_baseBuilt = true;
+
+            // もし前の方式で StartMenuUI にも伝えたいならここで
+            var ui = Object.FindFirstObjectByType<StartMenuUI>();
+            if (isFirstBase && ui != null)
             {
-                var ui = Object.FindFirstObjectByType<StartMenuUI>();
-                if (ui != null)
-                {
-                    bool spawned = ui.TrySpawnBaseAt(pos);
-                    if (spawned)
-                        _protectedCells.Add(cell);
-                }
+                ui.TrySpawnBaseAt(pos);
             }
+
+            // FlowField も更新したいならここで
+            if (flowField != null)
+                RegisterBuildingToFlowField(defToPlace, pos, true);
         }
     }
 
@@ -277,33 +311,100 @@ public class BuildPlacement : MonoBehaviour
     {
         if (def == null) return;
 
+        GameObject placedGo = null;
+
+        // ★ここで初めて「Baseが完成した」とする
+        if (!s_baseBuilt && baseDef != null && def == baseDef)
+        {
+            s_baseBuilt = true;
+            _protectedCells.Add(cell);
+
+            // FlowField のゴールをここにする
+            if (flowField != null)
+                flowField.SetTargetWorld(pos);
+
+            // ↓↓↓ ここを追加 ↓↓↓
+            // 細かいグリッドを「このタイルにも必ず敷いて」とHexPerTileFineGridに伝える
+            var hexFine = Object.FindFirstObjectByType<HexPerTileFineGrid>();
+            if (hexFine != null)
+                hexFine.ForceCreateAtWorld(pos);
+            // ↑↑↑ ここまで追加 ↑↑↑
+
+            // UIの旧処理
+            var ui = Object.FindFirstObjectByType<StartMenuUI>();
+            if (ui != null)
+            {
+                ui.TrySpawnBaseAt(pos);
+            }
+
+            // 下に六角も出すやつ
+            if (baseHexDef != null && baseHexDef.prefab != null)
+            {
+                var hexGo = Instantiate(baseHexDef.prefab, pos, Quaternion.identity, prefabParent);
+                foreach (var c in hexGo.GetComponentsInChildren<Collider2D>(true))
+                    c.enabled = false;
+                foreach (var c in hexGo.GetComponentsInChildren<Collider>(true))
+                    c.enabled = false;
+            }
+        }
+
         if (ghost != null)
         {
-            // 1) ゴーストの色を元に戻す
+            // ゴーストを完成形に
             SetSpriteColor(ghost.transform, Color.white);
-
-            // 2) Colliderを有効化（ゴーストを作るときに全部OFFにしている前提）
             foreach (var c in ghost.GetComponentsInChildren<Collider2D>(true))
                 c.enabled = true;
             foreach (var c in ghost.GetComponentsInChildren<Collider>(true))
                 c.enabled = true;
-
-            // 3) 念のため位置を合わせる
             ghost.transform.position = pos;
 
-            // 4) 配置済みマップに登録
             _placedByCell[cell] = ghost;
+            placedGo = ghost;
         }
         else
         {
-            // ゴーストが何らかで失われたときのフォールバック
             var go = Instantiate(def.prefab, pos, Quaternion.identity, prefabParent);
             _placedByCell[cell] = go;
+            placedGo = go;
         }
 
-        // ★ここには重い処理は書かない
-        // Baseを置く・FlowFieldをRebuildするなどは
-        // DroneBuildManager.NotifyDroneJobFinished(...) 側の heavy キューで少しずつやる
+        // ★ ここが今回の追加部分 ★
+        // 「この建物がBaseだった」＝「下に六角タイルも敷きたい」
+        bool isBase = (!s_baseBuilt && baseDef != null && def == baseDef)    // 初回のBase
+                      || (baseDef != null && def == baseDef);                // 念のため2回目以降もチェック
+
+        if (isBase)
+        {
+            // Baseが完成したときに static フラグを立てる
+            s_baseBuilt = true;
+            _protectedCells.Add(cell);
+
+            // ↓ここで「一緒に敷く六角タイル」を生成
+            if (baseHexDef != null && baseHexDef.prefab != null)
+            {
+                // 同じ位置に敷く。少し背面にしたいなら z を -0.1f とかにしてもいい
+                Vector3 hexPos = pos;
+                // hexPos.z = pos.z + 0.01f; // 必要なら
+
+                var hexGo = Instantiate(baseHexDef.prefab, hexPos, Quaternion.identity, prefabParent);
+                // 六角はぶつからなくていいならコライダーを切ってもよい
+                foreach (var c in hexGo.GetComponentsInChildren<Collider2D>(true))
+                    c.enabled = false;
+                foreach (var c in hexGo.GetComponentsInChildren<Collider>(true))
+                    c.enabled = false;
+            }
+
+            // （従来どおり StartMenuUI にも知らせたい場合）
+            var ui = Object.FindFirstObjectByType<StartMenuUI>();
+            if (ui != null)
+            {
+                ui.TrySpawnBaseAt(pos);
+            }
+        }
+
+        // FlowField にも伝える
+        if (flowField != null)
+            RegisterBuildingToFlowField(def, pos, true);
     }
 
     void DeleteAtBig(Vector3Int cell)
@@ -439,29 +540,54 @@ public class BuildPlacement : MonoBehaviour
     {
         if (_current == null) return false;
 
+        // 1) 六角タイルの存在チェック
+        bool onValidHex = true;
+
         if (hexTilemap != null)
         {
             var hcell = hexTilemap.WorldToCell(worldCenter);
-            if (!hexTilemap.HasTile(hcell))
+            onValidHex = hexTilemap.HasTile(hcell);
+
+            if (!onValidHex)
+            {
+                // ← Tilemapにタイルは無いけど、HexPerTileFineGrid が強制生成してるかもしれない
+                var hexFine = Object.FindFirstObjectByType<HexPerTileFineGrid>();
+                if (hexFine != null && hexFine.HasFineAtWorld(worldCenter))
+                {
+                    onValidHex = true;
+                }
+            }
+
+            if (!onValidHex)
                 return false;
         }
 
+        // 2) Buildable チェック
         if (requireBuildableForFine)
         {
+            bool hasBuildable = false;
             var hits = Physics2D.OverlapCircleAll((Vector2)worldCenter, fineBuildableRadius);
-            bool found = false;
             foreach (var h in hits)
             {
                 if (h.CompareTag("Buildable"))
                 {
-                    found = true;
+                    hasBuildable = true;
                     break;
                 }
             }
-            if (!found)
-                return false;
+
+            if (!hasBuildable)
+            {
+                // Buildableが無くても、さっきの「強制グリッド」ならOKにする
+                var hexFine = Object.FindFirstObjectByType<HexPerTileFineGrid>();
+                if (hexFine == null || !hexFine.HasFineAtWorld(worldCenter))
+                {
+                    return false;
+                }
+            }
         }
 
+        // 3) 既存の占有チェック（ここはそのまま）
         int w = Mathf.Max(1, _current.cellsWidth);
         int height = Mathf.Max(1, _current.cellsHeight);
 

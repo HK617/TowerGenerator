@@ -33,6 +33,10 @@ public class EnemySpawnerRaid : MonoBehaviour
     public float initialRaidDelaySeconds = 60f;
     public bool autoRaidEnabled = true;
 
+    [Header("Base condition")]
+    [Tooltip("Baseが建つまでRaidを始めない")]
+    public bool requireBaseBeforeRaid = true;
+
     bool _raidConsumed = false;
     readonly List<Vector3> _spawnedPositions = new();
 
@@ -69,6 +73,10 @@ public class EnemySpawnerRaid : MonoBehaviour
     void Update()
     {
         if (!enemyPrefab || !grid) return;
+
+        // ★Baseがまだなら何もしない
+        if (requireBaseBeforeRaid && !BuildPlacement.s_baseBuilt)
+            return;
 
         if (raid && !_raidConsumed)
         {
@@ -219,5 +227,11 @@ public class EnemySpawnerRaid : MonoBehaviour
         return true;
     }
 
-    public void TriggerRaid() => raid = true;
+    public void TriggerRaid()
+    {
+        if (requireBaseBeforeRaid && !BuildPlacement.s_baseBuilt)
+            return;
+
+        raid = true;
+    }
 }
