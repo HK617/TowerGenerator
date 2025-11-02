@@ -75,6 +75,15 @@ public class BuildPlacement : MonoBehaviour
     readonly Dictionary<Vector2Int, GameObject> _placedFine = new();
     readonly HashSet<Vector3Int> _protectedCells = new();
 
+    // ===== セーブ用構造体 =====
+    public struct SavedBuilding
+    {
+        public string defName;
+        public Vector3 position;
+        public bool isFine;
+        public bool isBase;
+    }
+
     void Awake()
     {
         if (!grid) grid = GetComponentInParent<Grid>();
@@ -101,7 +110,7 @@ public class BuildPlacement : MonoBehaviour
         if (s_buildLocked)
         {
             UpdatePointerActive(false, false);
-            ClearPreview();    // あなたの実装にあるならこれを呼ぶ、なければ消していい
+            ClearPreview();
             return;
         }
         if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
@@ -167,7 +176,6 @@ public class BuildPlacement : MonoBehaviour
 
             if (_isDragging && mouse.leftButton.wasReleasedThisFrame)
             {
-                // ← ここが「順番にドローンへ」になる
                 foreach (var p in _previewCells)
                 {
                     if (CanPlaceAtFine(p.cell, p.center))
@@ -252,12 +260,10 @@ public class BuildPlacement : MonoBehaviour
 
     void PlaceAtBig(Vector3Int cell)
     {
-        // 何も選んでないなら置けない
         if (_current?.prefab == null && (baseDef == null || s_baseBuilt))
             return;
         if (!CanPlaceAtBig(cell)) return;
 
-        // ★ここがポイント：
         // まだBaseが建っていないなら、ユーザーが何を選んでいても baseDef を建てる
         BuildingDef defToPlace = _current;
         bool isFirstBase = false;
@@ -267,99 +273,72 @@ public class BuildPlacement : MonoBehaviour
             isFirstBase = true;
         }
 
-        if (defToPlace == null) return; // 念のため
+        if (defToPlace == null) return;
 
         Vector3 pos = grid.GetCellCenterWorld(cell) + hoverOffset;
 
         if (useDroneBuild && droneManager != null)
         {
-            // 1) ゴーストを置いて予約
             GameObject ghost = Instantiate(defToPlace.prefab, pos, Quaternion.identity, prefabParent);
             DisableColliders(ghost.transform);
             SetSpriteColor(ghost.transform, new Color(1f, 1f, 1f, previewAlpha));
 
-            // 仮で占有。Baseなら壊せないようにする
             _placedByCell[cell] = ghost;
             if (isFirstBase)
                 _protectedCells.Add(cell);
 
-            // 2) ドローンに依頼（←ここで実際に建つ）
             droneManager.EnqueueBigBuild(this, defToPlace, cell, pos, ghost);
         }
         else
         {
-            // ドローンを使わないときは即完成
             var go = Instantiate(defToPlace.prefab, pos, Quaternion.identity, prefabParent);
             _placedByCell[cell] = go;
 
-            // Base なら壊せないように
             if (isFirstBase)
                 _protectedCells.Add(cell);
 
-            // 完成と同時に「Baseできたよ」を通知
             if (isFirstBase)
                 s_baseBuilt = true;
 
-            // もし前の方式で StartMenuUI にも伝えたいならここで
             var ui = Object.FindFirstObjectByType<StartMenuUI>();
             if (isFirstBase && ui != null)
             {
                 ui.TrySpawnBaseAt(pos);
             }
 
-            // FlowField も更新したいならここで
             if (flowField != null)
                 RegisterBuildingToFlowField(defToPlace, pos, true);
         }
     }
 
     // ドローンが完了したときに呼ぶ、六角(ビッグ)セル用の軽量完成処理
-    // DestroyもInstantiateもせずに、最初に置いたゴーストを“完成形”にするだけ。
-    // Base生成とかFlowFieldの重い処理は DroneBuildManager 側で後からやる。
     public void FinalizeBigPlacement(BuildingDef def, Vector3Int cell, Vector3 pos, GameObject ghost)
     {
         if (def == null) return;
 
         GameObject placedGo = null;
 
-        // ★ここで初めて「Baseが完成した」とする
+        // Baseが完成したときの処理（ドローン版）
         if (!s_baseBuilt && baseDef != null && def == baseDef)
         {
-            s_baseBuilt = true;
-            _protectedCells.Add(cell);
-
-            // FlowField のゴールをここにする
-            if (flowField != null)
-                flowField.SetTargetWorld(pos);
-
-            // ↓↓↓ ここを追加 ↓↓↓
-            // 細かいグリッドを「このタイルにも必ず敷いて」とHexPerTileFineGridに伝える
-            var hexFine = Object.FindFirstObjectByType<HexPerTileFineGrid>();
-            if (hexFine != null)
-                hexFine.ForceCreateAtWorld(pos);
-            // ↑↑↑ ここまで追加 ↑↑↑
-
-            // UIの旧処理
-            var ui = Object.FindFirstObjectByType<StartMenuUI>();
-            if (ui != null)
+            // 基本はRestoreBaseAtと同じことをやる
+            RestoreBaseAt(def, pos);
+            // ただし、今のゴーストを採用するなら上書き
+            if (ghost != null)
             {
-                ui.TrySpawnBaseAt(pos);
+                SetSpriteColor(ghost.transform, Color.white);
+                foreach (var c in ghost.GetComponentsInChildren<Collider2D>(true))
+                    c.enabled = true;
+                foreach (var c in ghost.GetComponentsInChildren<Collider>(true))
+                    c.enabled = true;
+                ghost.transform.position = pos;
+                _placedByCell[cell] = ghost;
             }
-
-            // 下に六角も出すやつ
-            if (baseHexDef != null && baseHexDef.prefab != null)
-            {
-                var hexGo = Instantiate(baseHexDef.prefab, pos, Quaternion.identity, prefabParent);
-                foreach (var c in hexGo.GetComponentsInChildren<Collider2D>(true))
-                    c.enabled = false;
-                foreach (var c in hexGo.GetComponentsInChildren<Collider>(true))
-                    c.enabled = false;
-            }
+            return;
         }
 
         if (ghost != null)
         {
-            // ゴーストを完成形に
             SetSpriteColor(ghost.transform, Color.white);
             foreach (var c in ghost.GetComponentsInChildren<Collider2D>(true))
                 c.enabled = true;
@@ -377,43 +356,54 @@ public class BuildPlacement : MonoBehaviour
             placedGo = go;
         }
 
-        // ★ ここが今回の追加部分 ★
-        // 「この建物がBaseだった」＝「下に六角タイルも敷きたい」
-        bool isBase = (!s_baseBuilt && baseDef != null && def == baseDef)    // 初回のBase
-                      || (baseDef != null && def == baseDef);                // 念のため2回目以降もチェック
-
-        if (isBase)
-        {
-            // Baseが完成したときに static フラグを立てる
-            s_baseBuilt = true;
-            _protectedCells.Add(cell);
-
-            // ↓ここで「一緒に敷く六角タイル」を生成
-            if (baseHexDef != null && baseHexDef.prefab != null)
-            {
-                // 同じ位置に敷く。少し背面にしたいなら z を -0.1f とかにしてもいい
-                Vector3 hexPos = pos;
-                // hexPos.z = pos.z + 0.01f; // 必要なら
-
-                var hexGo = Instantiate(baseHexDef.prefab, hexPos, Quaternion.identity, prefabParent);
-                // 六角はぶつからなくていいならコライダーを切ってもよい
-                foreach (var c in hexGo.GetComponentsInChildren<Collider2D>(true))
-                    c.enabled = false;
-                foreach (var c in hexGo.GetComponentsInChildren<Collider>(true))
-                    c.enabled = false;
-            }
-
-            // （従来どおり StartMenuUI にも知らせたい場合）
-            var ui = Object.FindFirstObjectByType<StartMenuUI>();
-            if (ui != null)
-            {
-                ui.TrySpawnBaseAt(pos);
-            }
-        }
-
-        // FlowField にも伝える
         if (flowField != null)
             RegisterBuildingToFlowField(def, pos, true);
+    }
+
+    // ★ Base専用の復元（ロード時やドローン完了時に共通で使う）
+    void RestoreBaseAt(BuildingDef baseDefToUse, Vector3 pos)
+    {
+        if (baseDefToUse == null) return;
+
+        // 1) Base本体
+        var baseGO = Instantiate(baseDefToUse.prefab, pos, Quaternion.identity, prefabParent);
+
+        var cell = grid.WorldToCell(pos - hoverOffset);
+        _placedByCell[cell] = baseGO;
+
+        // 2) Baseフラグと保護
+        s_baseBuilt = true;
+        _protectedCells.Add(cell);
+
+        // 3) 下に六角タイルを敷く
+        if (baseHexDef != null && baseHexDef.prefab != null)
+        {
+            var hexGo = Instantiate(baseHexDef.prefab, pos, Quaternion.identity, prefabParent);
+            foreach (var c in hexGo.GetComponentsInChildren<Collider2D>(true))
+                c.enabled = false;
+            foreach (var c in hexGo.GetComponentsInChildren<Collider>(true))
+                c.enabled = false;
+        }
+
+        // 4) 細かいグリッドを強制生成
+        var hexFine = Object.FindFirstObjectByType<HexPerTileFineGrid>();
+        if (hexFine != null)
+        {
+            hexFine.ForceCreateAtWorld(pos);
+        }
+
+        // 5) FlowFieldゴールにする
+        if (flowField != null)
+        {
+            flowField.SetTargetWorld(pos);
+        }
+
+        // 6) UIへ
+        var ui = Object.FindFirstObjectByType<StartMenuUI>();
+        if (ui != null)
+        {
+            ui.TrySpawnBaseAt(pos);
+        }
     }
 
     void DeleteAtBig(Vector3Int cell)
@@ -480,39 +470,31 @@ public class BuildPlacement : MonoBehaviour
         Vector3 finalCenter = worldCenter;
         if (!CanPlaceAtFine(fcell, finalCenter)) return;
 
-        // まずは「ゴーストで予約」
         GameObject ghost = Instantiate(_current.prefab, finalCenter, Quaternion.identity, prefabParent);
         DisableColliders(ghost.transform);
         SetSpriteColor(ghost.transform, new Color(1f, 1f, 1f, previewAlpha));
 
-        // 占有セルをゴーストで埋めておく（他の連続設置でかぶらないようにする）
         ReserveFineCells(fcell, _current, ghost);
 
-        // ドローンに投げる
         if (useDroneBuild && droneManager != null)
         {
             droneManager.EnqueueFineBuild(this, _current, fcell, finalCenter, ghost);
         }
         else
         {
-            // ドローンがいない/使わないときはすぐ完成扱い
             FinalizeFinePlacement(_current, fcell, finalCenter, ghost);
         }
     }
 
-    // ドローン完了時に呼ばれる
-    // ドローンが終わったときに呼ばれる・軽い版（細かいグリッド）
     public void FinalizeFinePlacement(BuildingDef def, Vector2Int fcell, Vector3 pos, GameObject ghost)
     {
         if (ghost == null) return;
 
-        // ゴースト → 本物化
         SetSpriteColor(ghost.transform, Color.white);
         foreach (var c in ghost.GetComponentsInChildren<Collider2D>(true)) c.enabled = true;
         foreach (var c in ghost.GetComponentsInChildren<Collider>(true)) c.enabled = true;
         ghost.transform.position = pos;
 
-        // 予約セルをこのオブジェクトに差し替える
         var tmp = new List<Vector2Int>();
         foreach (var kv in _placedFine)
             if (kv.Value == ghost)
@@ -520,7 +502,6 @@ public class BuildPlacement : MonoBehaviour
         foreach (var k in tmp)
             _placedFine[k] = ghost;
 
-        // ★ここを追加する★
         if (flowField != null && def != null)
             RegisterBuildingToFlowField(def, pos, true);
     }
@@ -549,7 +530,6 @@ public class BuildPlacement : MonoBehaviour
     {
         if (_current == null) return false;
 
-        // 1) 六角タイルの存在チェック
         bool onValidHex = true;
 
         if (hexTilemap != null)
@@ -559,7 +539,6 @@ public class BuildPlacement : MonoBehaviour
 
             if (!onValidHex)
             {
-                // ← Tilemapにタイルは無いけど、HexPerTileFineGrid が強制生成してるかもしれない
                 var hexFine = Object.FindFirstObjectByType<HexPerTileFineGrid>();
                 if (hexFine != null && hexFine.HasFineAtWorld(worldCenter))
                 {
@@ -571,7 +550,6 @@ public class BuildPlacement : MonoBehaviour
                 return false;
         }
 
-        // 2) Buildable チェック
         if (requireBuildableForFine)
         {
             bool hasBuildable = false;
@@ -587,7 +565,6 @@ public class BuildPlacement : MonoBehaviour
 
             if (!hasBuildable)
             {
-                // Buildableが無くても、さっきの「強制グリッド」ならOKにする
                 var hexFine = Object.FindFirstObjectByType<HexPerTileFineGrid>();
                 if (hexFine == null || !hexFine.HasFineAtWorld(worldCenter))
                 {
@@ -596,7 +573,6 @@ public class BuildPlacement : MonoBehaviour
             }
         }
 
-        // 3) 既存の占有チェック（ここはそのまま）
         int w = Mathf.Max(1, _current.cellsWidth);
         int height = Mathf.Max(1, _current.cellsHeight);
 
@@ -643,27 +619,6 @@ public class BuildPlacement : MonoBehaviour
                 var key = new Vector2Int(cx, cy);
                 _placedFine[key] = go;
             }
-        }
-    }
-
-    void UpdatePreviewAndPointerFine(Vector2Int fcell, Vector3 worldCenter)
-    {
-        Vector3 evenOff = GetEvenSizeOffsetForFine(_current);
-        Vector3 finalPos = worldCenter + evenOff;
-
-        if (fcell != _lastFineCell)
-        {
-            _lastFineCell = fcell;
-            MovePreview(finalPos);
-        }
-
-        bool can = CanPlaceAtFine(fcell, worldCenter);
-
-        if (_spawnedPreviewGO)
-        {
-            var col = can ? new Color(1f, 1f, 1f, previewAlpha)
-                          : new Color(1f, 0.4f, 0.4f, previewAlpha);
-            SetSpriteColor(_spawnedPreviewGO.transform, col);
         }
     }
 
@@ -892,5 +847,127 @@ public class BuildPlacement : MonoBehaviour
         float x = cell.x * cellSize + cellSize * 0.5f;
         float y = cell.y * cellSize + cellSize * 0.5f;
         return new Vector3(x, y, 0f);
+    }
+
+    // ===== ここからセーブ/ロードで使う公開API =====
+
+    // いまシーンに置かれている建物を全部列挙する
+    public List<SavedBuilding> CollectForSave()
+    {
+        var list = new List<SavedBuilding>();
+
+        // 六角(大)
+        foreach (var kv in _placedByCell)
+        {
+            var go = kv.Value;
+            if (!go) continue;
+
+            // ★ BuildingMarker は使わない。プレハブ名から取る
+            string defName = go.name.Replace("(Clone)", "").Trim();
+
+            bool isBase = false;
+            // baseDef が設定されていて、プレハブ名がそれと同じなら Base とみなす
+            if (baseDef != null && defName == baseDef.prefab.name)
+                isBase = true;
+
+            list.Add(new SavedBuilding
+            {
+                defName = defName,
+                position = go.transform.position,
+                isFine = false,
+                isBase = isBase
+            });
+        }
+
+        // 細かいグリッド
+        // 同じGameObjectが複数のセルに入ってる可能性があるので、一意にする
+        var added = new HashSet<GameObject>();
+        foreach (var kv in _placedFine)
+        {
+            var go = kv.Value;
+            if (!go) continue;
+            if (added.Contains(go)) continue;
+            added.Add(go);
+
+            string defName = go.name.Replace("(Clone)", "").Trim();
+
+            list.Add(new SavedBuilding
+            {
+                defName = defName,
+                position = go.transform.position,
+                isFine = true,
+                isBase = false   // 細かいグリッドのやつはBaseにはしない
+            });
+        }
+
+        return list;
+    }
+
+    // いま置いてある建物を全部消す（ロード時の最初で呼ぶ）
+    public void ClearAllPlaced()
+    {
+        foreach (var kv in _placedByCell)
+        {
+            if (kv.Value) Destroy(kv.Value);
+        }
+        foreach (var kv in _placedFine)
+        {
+            if (kv.Value) Destroy(kv.Value);
+        }
+        _placedByCell.Clear();
+        _placedFine.Clear();
+        _protectedCells.Clear();
+    }
+
+    // セーブデータから1個ぶん復元する
+    public void RestoreBuilding(BuildingDef def, Vector3 pos, bool fine, bool isBase)
+    {
+        if (isBase)
+        {
+            RestoreBaseAt(def, pos);
+            return;
+        }
+
+        if (fine)
+        {
+            var go = Instantiate(def.prefab, pos, Quaternion.identity, prefabParent);
+            var fcell = WorldToFineCell(pos, fineCellSize);
+            ReserveFineCells(fcell, def, go);
+            SetSpriteColor(go.transform, Color.white);
+            foreach (var c in go.GetComponentsInChildren<Collider2D>(true)) c.enabled = true;
+            foreach (var c in go.GetComponentsInChildren<Collider>(true)) c.enabled = true;
+            if (flowField != null)
+                RegisterBuildingToFlowField(def, pos, true);
+        }
+        else
+        {
+            var go = Instantiate(def.prefab, pos, Quaternion.identity, prefabParent);
+            var cell = grid.WorldToCell(pos - hoverOffset);
+            _placedByCell[cell] = go;
+            if (flowField != null)
+                RegisterBuildingToFlowField(def, pos, true);
+        }
+    }
+
+    // ロード時に「このタスクのゴーストを再生成したい」ためのAPI
+    public GameObject CreateGhostForDef(BuildingDef def, Vector3 pos, bool fine)
+    {
+        if (def == null) return null;
+        var go = Instantiate(def.prefab, pos, Quaternion.identity, prefabParent);
+        DisableColliders(go.transform);
+        SetSpriteColor(go.transform, new Color(1f, 1f, 1f, previewAlpha));
+
+        if (fine)
+        {
+            var fcell = WorldToFineCell(pos, fineCellSize);
+            ReserveFineCells(fcell, def, go);
+        }
+        else
+        {
+            var cell = grid.WorldToCell(pos - hoverOffset);
+            _placedByCell[cell] = go;
+        }
+
+        return go;
     }
 }

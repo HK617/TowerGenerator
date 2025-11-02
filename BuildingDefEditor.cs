@@ -27,11 +27,8 @@ public class BuildingDefEditor : Editor
         cellsHeight = serializedObject.FindProperty("cellsHeight");
         rebuildAfterPlace = serializedObject.FindProperty("rebuildAfterPlace");
 
-        if (def.shape == null)
-        {
-            ResizeShape(3); // デフォルトは3×3
-            EditorUtility.SetDirty(def);
-        }
+        // シリアライズされたデータ → 実体配列 に起こす
+        def.RestoreShape();
     }
 
     public override void OnInspectorGUI()
@@ -48,10 +45,12 @@ public class BuildingDefEditor : Editor
         EditorGUILayout.LabelField("FlowField Block Shape", EditorStyles.boldLabel);
         EditorGUILayout.HelpBox("赤=ブロック(通行不可)、緑=通行可。\nグリッドサイズは奇数・偶数どちらも選択可。", MessageType.Info);
 
-        // グリッドサイズ選択：偶数も含める
-        int currentSize = def.shape != null ? def.shape.GetLength(0) : 3;
-        int[] sizeOptions = { 2, 3, 4, 5, 6, 7, 8, 9, 20};
-        string[] sizeLabels = { "2×2", "3×3", "4×4", "5×5", "6×6", "7×7", "8×8", "9×9", "20×20" };
+        // 今のサイズ
+        int currentSize = def.GetShapeSize();
+
+        // サイズ選択
+        int[] sizeOptions = {1, 2, 3, 4, 5, 6, 7, 8, 9, 20 };
+        string[] sizeLabels = { "1×1", "2×2", "3×3", "4×4", "5×5", "6×6", "7×7", "8×8", "9×9", "20×20" };
         int newSize = EditorGUILayout.IntPopup("Grid Size", currentSize, sizeLabels, sizeOptions);
 
         if (newSize != currentSize)
@@ -61,7 +60,9 @@ public class BuildingDefEditor : Editor
                 $"グリッドを {currentSize}×{currentSize} から {newSize}×{newSize} に変更します。\n既存の形状データは消去されます。",
                 "OK", "キャンセル"))
             {
-                ResizeShape(newSize);
+                Undo.RecordObject(def, "Resize Shape");
+                def.RecreateShape(newSize, defaultValue: true);
+                EditorUtility.SetDirty(def);
             }
         }
 
@@ -78,19 +79,12 @@ public class BuildingDefEditor : Editor
             EditorUtility.SetDirty(def);
     }
 
-    void ResizeShape(int newSize)
-    {
-        def.shape = new bool[newSize, newSize];
-        for (int y = 0; y < newSize; y++)
-            for (int x = 0; x < newSize; x++)
-                def.shape[x, y] = true;   // ← 最初から全部ブロックにする
-        EditorUtility.SetDirty(def);
-    }
-
     void DrawShapeGrid()
     {
-        if (def.shape == null) return;
-        int gridSize = def.shape.GetLength(0);
+        def.RestoreShape();
+        var shape = def.shape;
+        if (shape == null) return;
+        int gridSize = shape.GetLength(0);
 
         GUILayout.BeginVertical("box");
         GUILayout.Label($"Shape ({gridSize}×{gridSize}):", EditorStyles.boldLabel);
@@ -98,12 +92,13 @@ public class BuildingDefEditor : Editor
         float boxSize = Mathf.Clamp(150f / gridSize, 12f, 30f);
         Color oldColor = GUI.backgroundColor;
 
+        // yを上から描画したいので逆順
         for (int y = gridSize - 1; y >= 0; y--)
         {
             GUILayout.BeginHorizontal();
             for (int x = 0; x < gridSize; x++)
             {
-                bool val = def.shape[x, y];
+                bool val = shape[x, y];
                 GUI.backgroundColor = val ? new Color(1f, 0.4f, 0.4f) : new Color(0.4f, 1f, 0.4f);
 
                 bool newVal = GUILayout.Toggle(val, "", "Button",
@@ -112,7 +107,7 @@ public class BuildingDefEditor : Editor
                 if (newVal != val)
                 {
                     Undo.RecordObject(def, "Change Shape");
-                    def.shape[x, y] = newVal;
+                    def.SetShapeCell(x, y, newVal);
                     EditorUtility.SetDirty(def);
                 }
 

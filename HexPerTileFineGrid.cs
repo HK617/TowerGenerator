@@ -1,4 +1,4 @@
-﻿﻿using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Tilemaps;
 using Unity.Cinemachine;
@@ -37,9 +37,16 @@ public class HexPerTileFineGrid : MonoBehaviour
     public float edgeMarginX = 0f;
     public float edgeMarginY = 0f;
 
+    // -------- FlowField --------
     [Header("FlowField options")]
     public FlowField025 flowField;
     public bool rebuildAfterEachCell = false;
+
+    [Tooltip("trueにすると、このグリッド生成時にFlowFieldを歩行可能にします。falseならそもそも書き込みません。")]
+    public bool writeToFlowField = false;
+
+    [Tooltip("ここに指定したレイヤーのコライダーがある場所は、FlowFieldを上書きしません（建物・Base用）")]
+    public LayerMask flowBlockMask = 0;
 
     // -------- Fill Settings --------
     [Header("Fill Settings")]
@@ -109,10 +116,12 @@ public class HexPerTileFineGrid : MonoBehaviour
 
         if (shouldShow)
         {
+            // 必要なセルを生成
             foreach (var c in _wanted)
                 if (!_loadedParents.ContainsKey(c))
                     CreateForCell(c);
 
+            // いらないセルを消す/非表示
             foreach (var kv in _loadedParents)
                 if (!_wanted.Contains(kv.Key))
                     SetActiveOrDestroy(kv.Key, false);
@@ -165,7 +174,7 @@ public class HexPerTileFineGrid : MonoBehaviour
             }
         }
 
-        // ここから下は今まで通り
+        // 親オブジェクトを用意
         GameObject parentGO = new GameObject($"FineGrid_{cell.x}_{cell.y}");
         parentGO.transform.SetParent(transform, worldPositionStays: false);
         parentGO.transform.position = Vector3.zero;
@@ -193,8 +202,10 @@ public class HexPerTileFineGrid : MonoBehaviour
             {
                 Vector2 p = new Vector2(x + step * 0.5f, y + step * 0.5f);
 
+                // 六角の内側だけ
                 if (clipInsideHex && !InPoly(p, hexPoly)) continue;
 
+                // グリッド本体を出す
                 if (zoomGridPrefab != null)
                 {
                     var go = Instantiate(
@@ -211,9 +222,41 @@ public class HexPerTileFineGrid : MonoBehaviour
                     }
                 }
 
-                if (flowField != null)
+                // ★ FlowFieldへの書き込み（方法B）
+                // 1) そもそも書き込む設定か？
+                // 2) FlowFieldがあるか？
+                // 3) その地点に「建物/プレハブなどのブロック用レイヤー」が無いか？
+                if (writeToFlowField && flowField != null)
                 {
-                    flowField.MarkWalkable(p.x, p.y);
+                    bool blockedByLayer = false;
+
+                    if (flowBlockMask.value != 0)
+                    {
+                        // ここに建物などがあれば上書きしない
+                        var hit = Physics2D.OverlapPoint(p, flowBlockMask);
+                        blockedByLayer = (hit != null);
+                    }
+
+                    if (!blockedByLayer)
+                    {
+                        // FlowField側にも“いまは書かないで”フラグがあるならそれも見る
+                        // （あれば、なければ無視される）
+                        var ffHasSuppress =
+                            flowField.GetType().GetField("suppressExternalMarks") != null;
+                        if (ffHasSuppress)
+                        {
+                            // リフレクションを避けたいなら、FlowField側に public bool suppressExternalMarks; を実装してください
+                            bool suppress = (bool)flowField.GetType()
+                                .GetField("suppressExternalMarks")
+                                .GetValue(flowField);
+                            if (!suppress)
+                                flowField.MarkWalkable(p.x, p.y);
+                        }
+                        else
+                        {
+                            flowField.MarkWalkable(p.x, p.y);
+                        }
+                    }
                 }
             }
         }
@@ -224,7 +267,7 @@ public class HexPerTileFineGrid : MonoBehaviour
         }
     }
 
-    // ★追加：外から「ここだけ強制で敷いて！」と呼ぶためのAPI
+    // ★外から「ここだけ強制で敷いて！」と呼ぶためのAPI
     public void ForceCreateAtWorld(Vector3 worldPos)
     {
         if (!hexTilemap) return;

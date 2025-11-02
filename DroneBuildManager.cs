@@ -1,32 +1,27 @@
-using System;
+ï»¿using System;
 using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// ‡@ ‹N“®‚ÉŒÅ’è”‚Ìƒhƒ[ƒ“‚ğ¶¬‚µ‚Ä‚Á‚Ä‚¨‚­
-/// ‡A Œš’zƒ^ƒXƒN‚ª—ˆ‚½‚çAIdle‚Èƒhƒ[ƒ“‚É“n‚·i‚¢‚È‚¯‚ê‚ÎƒLƒ…[‚É‚½‚ß‚éj
-/// ‡B ƒhƒ[ƒ“‚ªI‚í‚Á‚½‚çIdle‚É–ß‚·
-/// ‡C ¶UI‚É‚Íu‘¶İ‚µ‚Ä‚¢‚éƒhƒ[ƒ“‚½‚¿v‚ğí‚É‘—‚é
-/// ‡D ‹ŒDroneAgent—p‚ÌŒİŠ·Œû‚àc‚·
+/// â‘  èµ·å‹•æ™‚ã«å›ºå®šæ•°ã®ãƒ‰ãƒ­ãƒ¼ãƒ³ã‚’ç”Ÿæˆã—ã¦æŒã£ã¦ãŠã
+/// â‘¡ å»ºç¯‰ã‚¿ã‚¹ã‚¯ãŒæ¥ãŸã‚‰ã€Idleãªãƒ‰ãƒ­ãƒ¼ãƒ³ã«æ¸¡ã™ï¼ˆã„ãªã‘ã‚Œã°ã‚­ãƒ¥ãƒ¼ã«ãŸã‚ã‚‹ï¼‰
+/// â‘¢ ãƒ‰ãƒ­ãƒ¼ãƒ³ãŒçµ‚ã‚ã£ãŸã‚‰Idleã«æˆ»ã™
+/// â‘£ å·¦UIã«ã¯ã€Œå­˜åœ¨ã—ã¦ã„ã‚‹ãƒ‰ãƒ­ãƒ¼ãƒ³ãŸã¡ã€ã‚’å¸¸ã«é€ã‚‹
+/// â‘¤ ã‚»ãƒ¼ãƒ–/ãƒ­ãƒ¼ãƒ‰ã«å¯¾å¿œ
 /// </summary>
 public class DroneBuildManager : MonoBehaviour
 {
     public static DroneBuildManager Instance { get; private set; }
 
     [Header("Fixed drone pool")]
-    [Tooltip("Å‰‚É‰½‘Ì¶¬‚µ‚Ä‚¨‚­‚©")]
     public int initialDroneCount = 3;
-
-    [Tooltip("ƒv[ƒ‹—p‚Ìƒhƒ[ƒ“ƒvƒŒƒnƒuiDroneWorker‚ª•t‚¢‚Ä‚¢‚é‚±‚Æj")]
     public DroneWorker dronePrefab;
-
-    [Tooltip("ƒhƒ[ƒ“‚Ìo”­ˆÊ’u")]
     public Transform droneSpawnPoint;
 
     [Header("Task settings")]
     public int maxQueuedTasks = 64;
 
-    // ƒ^ƒXƒNiŒš’zˆË—Šj
+    // ã‚¿ã‚¹ã‚¯ï¼ˆå»ºç¯‰ä¾é ¼ï¼‰
     public enum TaskKind { Big, Fine }
 
     [Serializable]
@@ -43,21 +38,13 @@ public class DroneBuildManager : MonoBehaviour
         public Vector2Int fineCell;
     }
 
-    // ‹ŒƒR[ƒhŒİŠ·
+    // æ—§ã‚³ãƒ¼ãƒ‰äº’æ›
     [Serializable]
     public class BuildJob : BuildTask { }
 
-    // ƒ^ƒXƒN‚ğ‘Ò‚½‚¹‚Ä‚¨‚­
     readonly Queue<BuildTask> _queue = new Queue<BuildTask>();
-
-    // ‚¢‚Ü‘¶İ‚µ‚Ä‚¢‚éí’“ƒhƒ[ƒ“‚½‚¿
     readonly List<DroneWorker> _drones = new List<DroneWorker>();
 
-    /// <summary>
-    /// UI‚ªw“Ç‚·‚éƒCƒxƒ“ƒg
-    /// ‘æˆêˆø”: Œ»İ‘¶İ‚µ‚Ä‚¢‚éƒhƒ[ƒ“‚ÌƒŠƒXƒgií‚É“¯‚¶”j
-    /// ‘æ“ñˆø”: Œ»İ‚Ì‘Ò‹@ƒ^ƒXƒN”‚È‚Ç‚ğŒ©‚½‚¢‚Ég‚¤‚ªA‚±‚±‚Å‚Í‹ó‚ÅOK
-    /// </summary>
     public event Action<List<DroneWorker>, int> OnDroneStateChanged;
 
     void Awake()
@@ -72,14 +59,12 @@ public class DroneBuildManager : MonoBehaviour
 
     void Start()
     {
-        // í’“ƒhƒ[ƒ“¶¬
         SpawnInitialDrones();
         NotifyUI();
     }
 
     void Update()
     {
-        // ‹ó‚¢‚Ä‚éƒhƒ[ƒ“‚ª‚ ‚ê‚Îƒ^ƒXƒN‚ğ“n‚·
         TryDispatchTasks();
     }
 
@@ -87,7 +72,7 @@ public class DroneBuildManager : MonoBehaviour
     {
         if (dronePrefab == null)
         {
-            Debug.LogError("[DroneBuildManager] dronePrefab ‚ªİ’è‚³‚ê‚Ä‚¢‚Ü‚¹‚ñB");
+            Debug.LogError("[DroneBuildManager] dronePrefab ãŒè¨­å®šã•ã‚Œã¦ã„ã¾ã›ã‚“ã€‚");
             return;
         }
 
@@ -102,7 +87,7 @@ public class DroneBuildManager : MonoBehaviour
     }
 
     // =========================
-    // BuildPlacement ‚©‚çŒÄ‚Î‚ê‚é‚â‚Â
+    // BuildPlacement ã‹ã‚‰å‘¼ã°ã‚Œã‚‹ã‚„ã¤
     // =========================
     public void EnqueueBigBuild(BuildPlacement placer, BuildingDef def, Vector3Int cell, Vector3 pos, GameObject ghost)
     {
@@ -146,7 +131,6 @@ public class DroneBuildManager : MonoBehaviour
         NotifyUI();
     }
 
-    // ‹ó‚¢‚Ä‚éƒhƒ[ƒ“‚Éƒ^ƒXƒN‚ğ“n‚·
     void TryDispatchTasks()
     {
         if (_queue.Count == 0) return;
@@ -157,13 +141,13 @@ public class DroneBuildManager : MonoBehaviour
             if (_queue.Count == 0) break;
 
             var task = _queue.Dequeue();
-            drone.SetTask(task); // ƒhƒ[ƒ“‘¤‚É“n‚·
+            drone.SetTask(task);
         }
 
         NotifyUI();
     }
 
-    // ƒhƒ[ƒ“‚©‚çuI‚í‚Á‚½v‚ÆŒ¾‚í‚ê‚½‚Æ‚«
+    // ãƒ‰ãƒ­ãƒ¼ãƒ³ã‹ã‚‰ã€Œçµ‚ã‚ã£ãŸã€ã¨è¨€ã‚ã‚ŒãŸã¨ã
     public void NotifyDroneFinished(DroneWorker worker, BuildTask task, bool success = true)
     {
         if (success && task != null)
@@ -175,17 +159,14 @@ public class DroneBuildManager : MonoBehaviour
             catch (System.Exception ex)
             {
                 Debug.LogWarning("[DroneBuildManager] FinalizeTask failed: " + ex.Message);
-                // ¸”s‚µ‚½‚Ì‚ÅƒLƒ…[‚É–ß‚·
                 _queue.Enqueue(task);
             }
         }
         else if (!success && task != null)
         {
-            // ‚à‚¤ˆê‰ñ‚â‚ç‚¹‚éBŒ™‚È‚ç‚±‚±‚ÅÌ‚Ä‚é‚Å‚àOK
             _queue.Enqueue(task);
         }
 
-        // I‚í‚Á‚½‚Ì‚Å‚Ü‚½•Ê‚Ìƒ^ƒXƒN‚ğU‚é
         TryDispatchTasks();
         NotifyUI();
     }
@@ -204,9 +185,8 @@ public class DroneBuildManager : MonoBehaviour
     }
 
     // =========================
-    // ‹Œ DroneAgent ŒİŠ·
+    // æ—§ DroneAgent äº’æ›
     // =========================
-
     public BuildJob PopLegacyJob()
     {
         if (_queue.Count == 0) return null;
@@ -240,10 +220,123 @@ public class DroneBuildManager : MonoBehaviour
     }
 
     // =========================
-    // UI ‚É“n‚·
+    // UI ã«æ¸¡ã™
     // =========================
     void NotifyUI()
     {
         OnDroneStateChanged?.Invoke(new List<DroneWorker>(_drones), _queue.Count);
+    }
+
+    // =========================
+    // ã“ã“ã‹ã‚‰ã‚»ãƒ¼ãƒ–/ãƒ­ãƒ¼ãƒ‰å¯¾å¿œ
+    // =========================
+
+    // ã‚­ãƒ¥ãƒ¼ã«ãŸã¾ã£ã¦ã„ã‚‹ã‚¿ã‚¹ã‚¯ã‚’ã‚»ãƒ¼ãƒ–ç”¨ã«å¤‰æ›
+    public List<DroneTaskData> GetQueuedTasksForSave()
+    {
+        var list = new List<DroneTaskData>();
+        foreach (var t in _queue)
+        {
+            list.Add(ToTaskData(t));
+        }
+        return list;
+    }
+
+    // ã„ã¾å­˜åœ¨ã™ã‚‹ãƒ‰ãƒ­ãƒ¼ãƒ³ã®å®Ÿè¡Œä¸­ã‚¿ã‚¹ã‚¯ã‚’ã‚»ãƒ¼ãƒ–
+    public List<DroneRuntimeData> GetRuntimeForSave()
+    {
+        var list = new List<DroneRuntimeData>();
+        foreach (var d in _drones)
+        {
+            var data = new DroneRuntimeData();
+            data.name = d.name;
+            data.position = d.transform.position;
+            data.state = d.State.ToString();
+            data.workProgress = d.CurrentProgress01;
+            data.workTimer = d.SavedWorkTimer;
+            var cur = d.CurrentTask;
+            if (cur != null)
+                data.task = ToTaskData(cur);
+            list.Add(data);
+        }
+        return list;
+    }
+
+    DroneTaskData ToTaskData(BuildTask t)
+    {
+        return new DroneTaskData
+        {
+            kind = t.kind == TaskKind.Big ? "Big" : "Fine",
+            defName = t.def ? t.def.displayName : "",
+            worldPos = t.worldPos,
+            bigCell = t.bigCell,
+            fineCell = t.fineCell,
+            ghost = (t.ghost != null)
+        };
+    }
+
+    BuildTask FromTaskData(DroneTaskData data, BuildPlacement placement, Func<string, BuildingDef> defResolver)
+    {
+        var def = defResolver != null ? defResolver(data.defName) : null;
+
+        GameObject ghost = null;
+        if (data.ghost && def != null && placement != null)
+        {
+            bool fine = data.kind == "Fine";
+            ghost = placement.CreateGhostForDef(def, data.worldPos, fine);
+        }
+
+        var t = new BuildTask
+        {
+            kind = (data.kind == "Big") ? TaskKind.Big : TaskKind.Fine,
+            placer = placement,
+            def = def,
+            ghost = ghost,
+            worldPos = data.worldPos,
+            bigCell = data.bigCell,
+            fineCell = data.fineCell
+        };
+        return t;
+    }
+
+    // ã‚»ãƒ¼ãƒ–ãƒ‡ãƒ¼ã‚¿ã‹ã‚‰ã‚­ãƒ¥ãƒ¼ã¨ãƒ‰ãƒ­ãƒ¼ãƒ³ã‚’å¾©å…ƒã™ã‚‹
+    public void RestoreFromSave(
+        List<DroneTaskData> queued,
+        List<DroneRuntimeData> runtime,
+        BuildPlacement placement,
+        Func<string, BuildingDef> defResolver)
+    {
+        // 1) ã„ã£ãŸã‚“ã‚­ãƒ¥ãƒ¼ã‚’ç©ºã«
+        _queue.Clear();
+
+        // 2) ã‚­ãƒ¥ãƒ¼ã‚’æˆ»ã™
+        if (queued != null)
+        {
+            foreach (var q in queued)
+            {
+                var task = FromTaskData(q, placement, defResolver);
+                _queue.Enqueue(task);
+            }
+        }
+
+        // 3) ãƒ‰ãƒ­ãƒ¼ãƒ³æœ¬ä½“ã‚’æˆ»ã™
+        //    ã‚»ãƒ¼ãƒ–æ™‚ã¨ãƒ­ãƒ¼ãƒ‰æ™‚ã§æ•°ãŒé•ã†å¯èƒ½æ€§ã‚‚ã‚ã‚‹ã®ã§ã€æœ€å°æ•°ã§åˆã‚ã›ã‚‹
+        int count = Mathf.Min(_drones.Count, runtime != null ? runtime.Count : 0);
+        for (int i = 0; i < count; i++)
+        {
+            var d = _drones[i];
+            var rd = runtime[i];
+
+            d.RestoreFromSave(
+                rd,
+                placement,
+                defResolver,
+                this
+            );
+        }
+
+        // 4) ã¾ã ã‚­ãƒ¥ãƒ¼ãŒæ®‹ã£ã¦ã‚‹ãªã‚‰é…ã‚‹
+        TryDispatchTasks();
+        NotifyUI();
     }
 }
