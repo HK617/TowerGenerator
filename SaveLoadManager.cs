@@ -329,4 +329,10 @@ public class SaveLoadManager : MonoBehaviour
             idx++;
         }
     }
+    //他のデータに切り替える前にゲームを再起動するためのメソッド
+    public void ResetCurrentWorld()
+    {
+        // ゲーム中に動いているBuildPlacementやDroneBuildManagerを初期状態に戻す
+        CreateEmptyWorldState();
+    }
 }
