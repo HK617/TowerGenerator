@@ -1,50 +1,49 @@
-using System.Collections;
+ï»¿using System.Collections;
 using System.IO;
 using System.Linq;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
+[DefaultExecutionOrder(-200)]
 public class SaveLoadManager : MonoBehaviour
 {
     public static SaveLoadManager Instance { get; private set; }
 
+    [Header("Game References")]
     public BuildPlacement placement;
     public DroneBuildManager droneManager;
-
     public BuildingDef[] knownDefs;
-
-    public string defaultSlot = "save";
-    [SerializeField] string currentSlot = "save";
 
     const string PLAYERPREFS_KEY_LASTSLOT = "LastSaveSlot";
 
+    string currentSlot = "";
     string pendingLoadSlot = null;
-
-    // © 1ƒV[ƒ“\¬‚È‚Ì‚Å‚±‚±‚Í‹ó‚ÅOKiInspector‚Å‚à‹ó‚É‚µ‚Ä‚¨‚­j
-    public string gameSceneName = "";
 
     void Awake()
     {
-        if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
         Instance = this;
         DontDestroyOnLoad(gameObject);
 
+        // å‰å›ã®ã‚¹ãƒ­ãƒƒãƒˆã‚’å¾©å…ƒ
         string last = PlayerPrefs.GetString(PLAYERPREFS_KEY_LASTSLOT, "");
-        currentSlot = string.IsNullOrEmpty(last) ? defaultSlot : last;
+        currentSlot = string.IsNullOrEmpty(last) ? "" : last;
     }
 
     // =====================================================
-    // ƒ^ƒCƒgƒ‹‚©‚çŒÄ‚Ô
+    // ã‚¿ã‚¤ãƒˆãƒ«ã‹ã‚‰æ—¢å­˜ã‚¹ãƒ­ãƒƒãƒˆã‚’ãƒ­ãƒ¼ãƒ‰ã—ã¦ã‚¹ã‚¿ãƒ¼ãƒˆ
     // =====================================================
     public void StartGameAndLoad(string slot)
     {
         if (string.IsNullOrWhiteSpace(slot))
-            slot = defaultSlot;
+            slot = "save";
 
         pendingLoadSlot = slot.Trim();
         SetSlot(pendingLoadSlot);
 
-        // ƒ^ƒCƒgƒ‹‚ğ•Â‚¶‚Ä GameRoot ‚ğŠJ‚­
         var startUI = FindFirstObjectByType<StartMenuUI>();
         if (startUI != null)
         {
@@ -52,31 +51,74 @@ public class SaveLoadManager : MonoBehaviour
             if (startUI.gameRoot) startUI.gameRoot.SetActive(true);
         }
 
-        // š‚±‚±‚ªƒ|ƒCƒ“ƒgš
-        // GameRoot‚ğ—LŒø‰»‚µ‚½u‚ ‚Æ‚ÌƒtƒŒ[ƒ€v‚Åƒ[ƒh‚·‚é
         StartCoroutine(LoadAfterOneFrame(pendingLoadSlot));
     }
 
     IEnumerator LoadAfterOneFrame(string slot)
     {
-        // 1ƒtƒŒ[ƒ€‚Ü‚Â ¨ GameRoot”z‰º‚Ì Start() ‚ª‘S•”I‚í‚é
         yield return null;
 
-        // ”O‚Ì‚½‚ß‚à‚¤1ƒtƒŒ[ƒ€‘Ò‚¿‚½‚¢‚È‚ç‚à‚¤1‰ñ yield return null; ‚µ‚Ä‚à‚¢‚¢
-        // yield return null;
-
-        // Game“à‚ÌQÆ‚ğæ‚è’¼‚·
         if (!placement) placement = FindFirstObjectByType<BuildPlacement>();
         if (!droneManager) droneManager = FindFirstObjectByType<DroneBuildManager>();
 
-        // ‚±‚±‚Å–{ƒ[ƒh
         LoadFrom(slot);
         pendingLoadSlot = null;
     }
 
-    // =========================================================
-    //  ŒöŠJAPIFƒXƒƒbƒg‚ÌØ‘Ö
-    // =========================================================
+    // =====================================================
+    // ğŸ”¥ æ–°ã—ãå§‹ã‚ã‚‹
+    // =====================================================
+    public void StartNewGame()
+    {
+        // è‡ªå‹•ã§ç©ºã„ã¦ã‚‹ã‚¹ãƒ­ãƒƒãƒˆåã‚’ä½œæˆ
+        string newSlot = GenerateNewSlotName();
+        SetSlot(newSlot);
+
+        var startUI = FindFirstObjectByType<StartMenuUI>();
+        if (startUI != null)
+        {
+            if (startUI.startPanel) startUI.startPanel.SetActive(false);
+            if (startUI.gameRoot) startUI.gameRoot.SetActive(true);
+        }
+
+        StartCoroutine(NewGameAfterOneFrame(newSlot));
+    }
+
+    IEnumerator NewGameAfterOneFrame(string slot)
+    {
+        yield return null;
+
+        if (!placement) placement = FindFirstObjectByType<BuildPlacement>();
+        if (!droneManager) droneManager = FindFirstObjectByType<DroneBuildManager>();
+
+        CreateEmptyWorldState();
+        SaveTo(slot);
+    }
+
+    // =====================================================
+    // ç©ºã®ãƒ¯ãƒ¼ãƒ«ãƒ‰ã‚’åˆæœŸåŒ–
+    // =====================================================
+    void CreateEmptyWorldState()
+    {
+        if (!EnsureGameRefs()) return;
+
+        placement.ClearAllPlaced();
+        BuildPlacement.s_baseBuilt = false;
+
+        if (droneManager != null)
+        {
+            droneManager.RestoreFromSave(
+                new System.Collections.Generic.List<DroneTaskData>(),
+                new System.Collections.Generic.List<DroneRuntimeData>(),
+                placement,
+                _ => null
+            );
+        }
+    }
+
+    // =====================================================
+    // ã‚¹ãƒ­ãƒƒãƒˆç®¡ç†
+    // =====================================================
     public void SetSlot(string slotName)
     {
         if (string.IsNullOrWhiteSpace(slotName))
@@ -85,37 +127,24 @@ public class SaveLoadManager : MonoBehaviour
         currentSlot = slotName.Trim();
         PlayerPrefs.SetString(PLAYERPREFS_KEY_LASTSLOT, currentSlot);
         PlayerPrefs.Save();
-        Debug.Log("[SaveLoadManager] Slot changed to: " + currentSlot + " (" + MakePath(currentSlot) + ")");
+        Debug.Log($"[SaveLoadManager] Slot changed to: {currentSlot}");
     }
 
-    public string GetCurrentSlot() => currentSlot;
-
-    // =========================================================
-    //  ’Êí‚Ì Save / Load iƒQ[ƒ€’†j
-    // =========================================================
-    public void Save()
-    {
-        SaveTo(currentSlot);
-    }
-
-    public void Load()
-    {
-        LoadFrom(currentSlot);
-    }
+    // =====================================================
+    // é€šå¸¸ã®ã‚»ãƒ¼ãƒ–ãƒ»ãƒ­ãƒ¼ãƒ‰
+    // =====================================================
+    public void Save() => SaveTo(currentSlot);
+    public void Load() => LoadFrom(currentSlot);
 
     public void SaveTo(string slotName)
     {
-        // ƒ^ƒCƒgƒ‹‚Å‚±‚ê‚ğŒÄ‚ñ‚Å‚à refs ‚ª–³‚¢‚Ì‚Å’e‚­
         if (!EnsureGameRefs()) return;
 
         string path = MakePath(slotName);
-
         var data = new SaveData();
 
-        // ‘S‘Ì
         data.baseBuilt = BuildPlacement.s_baseBuilt;
 
-        // Œš•¨
         var placed = placement.CollectForSave();
         foreach (var b in placed)
         {
@@ -128,13 +157,12 @@ public class SaveLoadManager : MonoBehaviour
             });
         }
 
-        // ƒhƒ[ƒ“
         data.queuedTasks = droneManager.GetQueuedTasksForSave();
         data.drones = droneManager.GetRuntimeForSave();
 
         var json = JsonUtility.ToJson(data, true);
         File.WriteAllText(path, json);
-        Debug.Log("[SaveLoadManager] Saved to: " + path);
+        Debug.Log($"[SaveLoadManager] Saved to: {path}");
 
         SetSlot(slotName);
     }
@@ -146,7 +174,7 @@ public class SaveLoadManager : MonoBehaviour
         string path = MakePath(slotName);
         if (!File.Exists(path))
         {
-            Debug.LogWarning("[SaveLoadManager] no save file: " + path);
+            Debug.LogWarning($"[SaveLoadManager] No save file: {path}");
             return;
         }
 
@@ -154,14 +182,12 @@ public class SaveLoadManager : MonoBehaviour
         var data = JsonUtility.FromJson<SaveData>(json);
         if (data == null)
         {
-            Debug.LogWarning("[SaveLoadManager] load failed (json null) from: " + path);
+            Debug.LogWarning($"[SaveLoadManager] Load failed (json null) from: {path}");
             return;
         }
 
-        // ‘SÁ‚µ
         placement.ClearAllPlaced();
 
-        // Def ˆê——
         BuildingDef[] allDefs = (knownDefs != null && knownDefs.Length > 0)
             ? knownDefs
             : Resources.LoadAll<BuildingDef>("");
@@ -179,7 +205,7 @@ public class SaveLoadManager : MonoBehaviour
             var d3 = allDefs.FirstOrDefault(d => d && d.name == name);
             if (d3 != null) return d3;
 
-            Debug.LogWarning("[SaveLoadManager] BuildingDef not found for name: " + name);
+            Debug.LogWarning($"[SaveLoadManager] BuildingDef not found: {name}");
             return null;
         }
 
@@ -187,7 +213,6 @@ public class SaveLoadManager : MonoBehaviour
         {
             var def = FindDef(b.defName);
             if (def == null) continue;
-
             placement.RestoreBuilding(def, b.position, b.fine, b.isBase);
         }
 
@@ -200,13 +225,13 @@ public class SaveLoadManager : MonoBehaviour
             FindDef
         );
 
-        Debug.Log("[SaveLoadManager] Loaded from: " + path);
+        Debug.Log($"[SaveLoadManager] Loaded from: {path}");
         SetSlot(slotName);
     }
 
-    // =========================================================
-    //  •Û‘¶æˆê——iƒ^ƒCƒgƒ‹‚Åg‚¤j
-    // =========================================================
+    // =====================================================
+    // ä¿å­˜æ¸ˆã¿ãƒ•ã‚¡ã‚¤ãƒ«ä¸€è¦§ï¼ˆã‚¿ã‚¤ãƒˆãƒ«UIç”¨ï¼‰
+    // =====================================================
     public string[] ListSaveFiles()
     {
         string dir = Application.persistentDataPath;
@@ -218,19 +243,61 @@ public class SaveLoadManager : MonoBehaviour
         return files;
     }
 
-    // =========================================================
-    //  “à•”ƒwƒ‹ƒp[
-    // =========================================================
+    // =======================
+    // ã‚»ãƒ¼ãƒ–ã‚’1ä»¶ã ã‘æ¶ˆã™
+    // =======================
+    public void DeleteSave(string slotName)
+    {
+        if (string.IsNullOrWhiteSpace(slotName))
+            return;
+
+        // "save_012" â†’ ãƒ‘ã‚¹ã«å¤‰æ›
+        string path = MakePath(slotName);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+            Debug.Log("[SaveLoadManager] deleted: " + path);
+        }
+
+        // ã‚‚ã—æ¶ˆã—ãŸã®ãŒä»Šã®ã‚¹ãƒ­ãƒƒãƒˆãªã‚‰è¨˜æ†¶ã‚‚æ¶ˆã™
+        string last = PlayerPrefs.GetString(PLAYERPREFS_KEY_LASTSLOT, "");
+        if (last == slotName)
+        {
+            PlayerPrefs.DeleteKey(PLAYERPREFS_KEY_LASTSLOT);
+            PlayerPrefs.Save();
+        }
+    }
+
+    // =======================
+    // å…¨éƒ¨æ¶ˆã™ï¼ˆå·¥å ´å‡ºè·ï¼‰
+    // =======================
+    public void DeleteAllSaves()
+    {
+        string dir = Application.persistentDataPath;
+        if (!Directory.Exists(dir)) return;
+
+        var files = Directory.GetFiles(dir, "*.json");
+        foreach (var f in files)
+        {
+            File.Delete(f);
+            Debug.Log("[SaveLoadManager] deleted: " + f);
+        }
+
+        // è¨˜æ†¶ã—ã¦ã‚‹ã‚¹ãƒ­ãƒƒãƒˆã‚‚å¿˜ã‚Œã‚‹
+        PlayerPrefs.DeleteKey(PLAYERPREFS_KEY_LASTSLOT);
+        PlayerPrefs.Save();
+    }
+
+
+    // =====================================================
+    // å†…éƒ¨ãƒ˜ãƒ«ãƒ‘ãƒ¼
+    // =====================================================
     string MakePath(string slotName)
     {
         if (string.IsNullOrWhiteSpace(slotName))
             slotName = "save";
-
-        slotName = slotName.Trim();
-
         if (!slotName.EndsWith(".json"))
             slotName += ".json";
-
         return Path.Combine(Application.persistentDataPath, slotName);
     }
 
@@ -241,9 +308,25 @@ public class SaveLoadManager : MonoBehaviour
 
         if (!placement || !droneManager)
         {
-            Debug.LogWarning("[SaveLoadManager] game refs not found yet. Are you in title scene?");
+            Debug.LogWarning("[SaveLoadManager] game refs not found yet.");
             return false;
         }
         return true;
+    }
+
+    string GenerateNewSlotName()
+    {
+        var files = ListSaveFiles();
+        int idx = 1;
+        if (!File.Exists(MakePath("save")))
+            return "save";
+
+        while (true)
+        {
+            string candidate = $"save_{idx:000}";
+            if (!File.Exists(MakePath(candidate)))
+                return candidate;
+            idx++;
+        }
     }
 }
