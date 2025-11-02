@@ -1,9 +1,5 @@
 using UnityEngine;
 
-/// <summary>
-/// 常駐するドローン1体ぶん。
-/// 詰まり防止のために「移動に時間がかかりすぎたら失敗で返す」「作業が終わらなかったら失敗で返す」を入れてある。
-/// </summary>
 public class DroneWorker : MonoBehaviour
 {
     public enum DroneState
@@ -16,33 +12,29 @@ public class DroneWorker : MonoBehaviour
     [Header("Move")]
     public float speed = 6f;
     public float arriveDistance = 0.05f;
-
-    [Tooltip("これ秒以上かかっても目的地に着かなかったら、そのタスクは失敗とみなして返す")]
     public float moveTimeout = 3f;
 
     [Header("Work")]
     public float workTime = 0.5f;
-
-    [Tooltip("これ秒以上作業したのに終わらなかったら、そのタスクは失敗として返す")]
     public float workTimeout = 5f;
 
     [Header("Visual (optional)")]
     public Transform graphics;
 
     [Header("Enemy avoid")]
-    public LayerMask enemyCheckMask;   // Enemyレイヤーを指定
+    public LayerMask enemyCheckMask;
 
     [HideInInspector] public DroneBuildManager manager;
 
     public DroneState State => _state;
     public DroneBuildManager.BuildTask CurrentTask => _task;
     public float CurrentProgress01 => _workProgress;
+    public float SavedWorkTimer => _workTimer;
 
     DroneState _state = DroneState.Idle;
     DroneBuildManager.BuildTask _task;
     Vector3 _target;
     float _workProgress;
-
     float _moveTimer;
     float _workTimer;
 
@@ -83,18 +75,15 @@ public class DroneWorker : MonoBehaviour
         Vector3 to = _target - pos;
         float dist = to.magnitude;
 
-        // ① 近くに敵がいるかチェック（半径0.6fくらい）
         bool enemyVeryClose = false;
-        if (enemyCheckMask != 0) // ← 後で説明します
+        if (enemyCheckMask != 0)
         {
             var hit = Physics2D.OverlapCircle(pos, 0.6f, enemyCheckMask);
             enemyVeryClose = (hit != null);
         }
 
-        // ② 基本の到達距離（敵がいれば緩める）
         float reach = enemyVeryClose ? (arriveDistance * 4f) : arriveDistance;
 
-        // 目的地に届いたら作業フェーズへ
         if (dist <= reach)
         {
             _state = DroneState.Working;
@@ -103,7 +92,6 @@ public class DroneWorker : MonoBehaviour
             return;
         }
 
-        // タイムアウトチェック（敵がふさがってるときは少し余裕を持たせる）
         float timeout = enemyVeryClose ? (moveTimeout * 2f) : moveTimeout;
         if (_moveTimer > timeout)
         {
@@ -113,7 +101,6 @@ public class DroneWorker : MonoBehaviour
             return;
         }
 
-        // まだ移動できるなら進む
         if (dist > 0.001f)
         {
             Vector3 dir = to / dist;
@@ -131,11 +118,9 @@ public class DroneWorker : MonoBehaviour
     {
         _workTimer += Time.deltaTime;
 
-        // 万一 workTime が極端に短くても0除算にならないように
         float wt = Mathf.Max(0.01f, workTime);
         _workProgress += Time.deltaTime / wt;
 
-        // 仕事が終わった
         if (_workProgress >= 1f)
         {
             manager?.NotifyDroneFinished(this, _task, true);
@@ -145,13 +130,72 @@ public class DroneWorker : MonoBehaviour
             return;
         }
 
-        // 作業タイムアウト：Finalize 中のどこかで詰まっても復帰させる
         if (_workTimer > workTimeout)
         {
             manager?.NotifyDroneFinished(this, _task, false);
             _task = null;
             _state = DroneState.Idle;
             _workProgress = 0f;
+        }
+    }
+
+    // ===== ここからロード用 =====
+    public void RestoreFromSave(
+        DroneRuntimeData data,
+        BuildPlacement placement,
+        System.Func<string, BuildingDef> defResolver,
+        DroneBuildManager mgr)
+    {
+        // 位置を戻す
+        transform.position = data.position;
+        manager = mgr;
+
+        // 状態を文字列から
+        if (!System.Enum.TryParse<DroneState>(data.state, out var st))
+            st = DroneState.Idle;
+
+        // タスクが無いならIdleでOK
+        if (data.task == null)
+        {
+            _task = null;
+            _state = DroneState.Idle;
+            _workProgress = 0f;
+            _workTimer = 0f;
+            return;
+        }
+
+        // タスクを復元（BuildPlacement側でゴーストを作る）
+        var def = defResolver != null ? defResolver(data.task.defName) : null;
+        GameObject ghost = null;
+        if (data.task.ghost && def != null && placement != null)
+        {
+            bool fine = data.task.kind == "Fine";
+            ghost = placement.CreateGhostForDef(def, data.task.worldPos, fine);
+        }
+
+        var task = new DroneBuildManager.BuildTask
+        {
+            kind = (data.task.kind == "Big") ? DroneBuildManager.TaskKind.Big : DroneBuildManager.TaskKind.Fine,
+            placer = placement,
+            def = def,
+            ghost = ghost,
+            worldPos = data.task.worldPos,
+            bigCell = data.task.bigCell,
+            fineCell = data.task.fineCell
+        };
+
+        _task = task;
+        _target = task.worldPos;
+        _state = st;
+
+        // 作業途中から再開
+        _workProgress = Mathf.Clamp01(data.workProgress);
+        _workTimer = data.workTimer;
+
+        // もし「Movingで終わってた」場合、Movingとして再開
+        if (_state == DroneState.MovingToTarget)
+        {
+            _moveTimer = 0f;
         }
     }
 }
