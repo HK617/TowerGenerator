@@ -8,6 +8,9 @@ using UnityEngine;
 /// ③ ドローンが終わったらIdleに戻す
 /// ④ 左UIには「存在しているドローンたち」を常に送る
 /// ⑤ セーブ/ロードに対応
+/// 
+/// ※ この版では「キューできる数の上限」をなくしています。
+///    何個でもためられます。
 /// </summary>
 public class DroneBuildManager : MonoBehaviour
 {
@@ -18,8 +21,9 @@ public class DroneBuildManager : MonoBehaviour
     public DroneWorker dronePrefab;
     public Transform droneSpawnPoint;
 
-    [Header("Task settings")]
-    public int maxQueuedTasks = 64;
+    // ─────────────────────────────────────────────
+    // 以前あった「maxQueuedTasks」は削除しました
+    // ─────────────────────────────────────────────
 
     // タスク（建築依頼）
     public enum TaskKind { Big, Fine }
@@ -42,6 +46,7 @@ public class DroneBuildManager : MonoBehaviour
     [Serializable]
     public class BuildJob : BuildTask { }
 
+    // ← ここにタスクをためる。上限なし
     readonly Queue<BuildTask> _queue = new Queue<BuildTask>();
     readonly List<DroneWorker> _drones = new List<DroneWorker>();
 
@@ -121,13 +126,13 @@ public class DroneBuildManager : MonoBehaviour
 
     void EnqueueTask(BuildTask t)
     {
-        if (_queue.Count >= maxQueuedTasks)
-        {
-            Debug.LogWarning("[DroneBuildManager] queue is full.");
-            return;
-        }
+        // ★ 上限チェックなしでそのまま入れる
         _queue.Enqueue(t);
+
+        // すぐ渡せるドローンがいれば渡す
         TryDispatchTasks();
+
+        // UI更新（待ち件数を見せるため）
         NotifyUI();
     }
 
@@ -159,11 +164,13 @@ public class DroneBuildManager : MonoBehaviour
             catch (System.Exception ex)
             {
                 Debug.LogWarning("[DroneBuildManager] FinalizeTask failed: " + ex.Message);
+                // 失敗したら再キュー（ここも上限なしで戻せる）
                 _queue.Enqueue(task);
             }
         }
         else if (!success && task != null)
         {
+            // 失敗したタスクも戻す
             _queue.Enqueue(task);
         }
 
@@ -309,7 +316,7 @@ public class DroneBuildManager : MonoBehaviour
         // 1) いったんキューを空に
         _queue.Clear();
 
-        // 2) キューを戻す
+        // 2) キューを戻す（ここも上限なしでそのまま入れる）
         if (queued != null)
         {
             foreach (var q in queued)
@@ -320,7 +327,6 @@ public class DroneBuildManager : MonoBehaviour
         }
 
         // 3) ドローン本体を戻す
-        //    セーブ時とロード時で数が違う可能性もあるので、最小数で合わせる
         int count = Mathf.Min(_drones.Count, runtime != null ? runtime.Count : 0);
         for (int i = 0; i < count; i++)
         {
