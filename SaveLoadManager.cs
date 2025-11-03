@@ -2,24 +2,42 @@
 using System.IO;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 [DefaultExecutionOrder(-200)]
 public class SaveLoadManager : MonoBehaviour
 {
     public static SaveLoadManager Instance { get; private set; }
 
+    // ─────────────────────────────
+    // ゲーム内で参照するオブジェクト（Gameシーン側にある）
+    // ─────────────────────────────
     [Header("Game References")]
     public BuildPlacement placement;
     public DroneBuildManager droneManager;
     public BuildingDef[] knownDefs;
 
+    // ─────────────────────────────
+    // シーン名（インスペクターで変えられるようにする）
+    // ─────────────────────────────
+    [Header("Scene Names")]
+    public string titleSceneName = "Boot";   // タイトル用シーン
+    public string gameSceneName = "Game";   // ゲーム用シーン
+
     const string PLAYERPREFS_KEY_LASTSLOT = "LastSaveSlot";
 
+    // いま選ばれているスロット
     string currentSlot = "";
+
+    // 「このあとゲームシーンでこのスロットをロードしてね」という一時保存
     string pendingLoadSlot = null;
+
+    // 「このあとゲームシーンでNewGameしてね」というフラグ
+    bool pendingNewGame = false;
 
     void Awake()
     {
+        // シングルトン化
         if (Instance != null && Instance != this)
         {
             Destroy(gameObject);
@@ -28,13 +46,23 @@ public class SaveLoadManager : MonoBehaviour
         Instance = this;
         DontDestroyOnLoad(gameObject);
 
-        // 前回のスロットを復元
+        // 前回使っていたスロット名を復元
         string last = PlayerPrefs.GetString(PLAYERPREFS_KEY_LASTSLOT, "");
-        currentSlot = string.IsNullOrEmpty(last) ? "" : last;
+        if (!string.IsNullOrEmpty(last))
+            currentSlot = last;
+
+        // シーンロードを監視する
+        SceneManager.sceneLoaded += OnSceneLoaded;
+    }
+
+    void OnDestroy()
+    {
+        if (Instance == this)
+            SceneManager.sceneLoaded -= OnSceneLoaded;
     }
 
     // =====================================================
-    // タイトルから既存スロットをロードしてスタート
+    // タイトルから「このセーブで始める」→ゲームシーンを開く
     // =====================================================
     public void StartGameAndLoad(string slot)
     {
@@ -42,92 +70,73 @@ public class SaveLoadManager : MonoBehaviour
             slot = "save";
 
         pendingLoadSlot = slot.Trim();
+        pendingNewGame = false;
+
         SetSlot(pendingLoadSlot);
 
-        var startUI = FindFirstObjectByType<StartMenuUI>();
-        if (startUI != null)
-        {
-            if (startUI.startPanel) startUI.startPanel.SetActive(false);
-            if (startUI.gameRoot) startUI.gameRoot.SetActive(true);
-        }
-
-        StartCoroutine(LoadAfterOneFrame(pendingLoadSlot));
-    }
-
-    IEnumerator LoadAfterOneFrame(string slot)
-    {
-        yield return null;
-
-        if (!placement) placement = FindFirstObjectByType<BuildPlacement>();
-        if (!droneManager) droneManager = FindFirstObjectByType<DroneBuildManager>();
-
-        LoadFrom(slot);
-        pendingLoadSlot = null;
+        // ゲームシーンをロードする。これでGameシーンのオブジェクトは全部新しくなる
+        SceneManager.LoadScene(gameSceneName, LoadSceneMode.Single);
     }
 
     // =====================================================
-    // 🔥 新しく始める
+    // タイトルから「New Game」→ゲームシーンを開く
     // =====================================================
     public void StartNewGame()
     {
-        // 自動で空いてるスロット名を作成
         string newSlot = GenerateNewSlotName();
         SetSlot(newSlot);
 
-        var startUI = FindFirstObjectByType<StartMenuUI>();
-        if (startUI != null)
-        {
-            if (startUI.startPanel) startUI.startPanel.SetActive(false);
-            if (startUI.gameRoot) startUI.gameRoot.SetActive(true);
-        }
+        pendingLoadSlot = newSlot;
+        pendingNewGame = true;   // ← このフラグで「ロードじゃなく初期化」とわかる
 
-        StartCoroutine(NewGameAfterOneFrame(newSlot));
+        SceneManager.LoadScene(gameSceneName, LoadSceneMode.Single);
     }
 
-    IEnumerator NewGameAfterOneFrame(string slot)
+    // =====================================================
+    // シーンがロードされたら呼ばれる
+    // =====================================================
+    void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
+        // ゲームシーンが開いたときだけ処理する
+        if (scene.name == gameSceneName)
+        {
+            // ゲームシーン内の各コンポーネントが Awake / Start し終わってからロードしたいので1フレーム待つ
+            StartCoroutine(LoadGameSceneAfterOneFrame());
+        }
+    }
+
+    IEnumerator LoadGameSceneAfterOneFrame()
+    {
+        // 1フレーム待ってGameシーン内のオブジェクトを拾える状態にする
         yield return null;
 
+        // Gameシーン内の参照を拾う
         if (!placement) placement = FindFirstObjectByType<BuildPlacement>();
         if (!droneManager) droneManager = FindFirstObjectByType<DroneBuildManager>();
 
-        CreateEmptyWorldState();
-        SaveTo(slot);
-    }
-
-    // =====================================================
-    // 空のワールドを初期化
-    // =====================================================
-    void CreateEmptyWorldState()
-    {
-        if (!EnsureGameRefs()) return;
-
-        placement.ClearAllPlaced();
-        BuildPlacement.s_baseBuilt = false;
-
-        if (droneManager != null)
+        if (pendingNewGame)
         {
-            droneManager.RestoreFromSave(
-                new System.Collections.Generic.List<DroneTaskData>(),
-                new System.Collections.Generic.List<DroneRuntimeData>(),
-                placement,
-                _ => null
-            );
+            // 完全にまっさらにしてから保存
+            CreateEmptyWorldState();
+            SaveTo(currentSlot);
         }
+        else if (!string.IsNullOrEmpty(pendingLoadSlot))
+        {
+            // 指定スロットからロード
+            LoadFrom(pendingLoadSlot);
+        }
+
+        // フラグをクリア
+        pendingLoadSlot = null;
+        pendingNewGame = false;
     }
 
     // =====================================================
-    // スロット管理
+    // ESCなどでタイトルに戻る（Gameシーンをまるごと破棄してBootを開く）
     // =====================================================
-    public void SetSlot(string slotName)
+    public void ReturnToTitle()
     {
-        if (string.IsNullOrWhiteSpace(slotName))
-            return;
-
-        currentSlot = slotName.Trim();
-        PlayerPrefs.SetString(PLAYERPREFS_KEY_LASTSLOT, currentSlot);
-        PlayerPrefs.Save();
-        Debug.Log($"[SaveLoadManager] Slot changed to: {currentSlot}");
+        SceneManager.LoadScene(titleSceneName, LoadSceneMode.Single);
     }
 
     // =====================================================
@@ -143,6 +152,7 @@ public class SaveLoadManager : MonoBehaviour
         string path = MakePath(slotName);
         var data = new SaveData();
 
+        // 建物
         data.baseBuilt = BuildPlacement.s_baseBuilt;
 
         var placed = placement.CollectForSave();
@@ -157,9 +167,11 @@ public class SaveLoadManager : MonoBehaviour
             });
         }
 
+        // ドローンのキューと実行中
         data.queuedTasks = droneManager.GetQueuedTasksForSave();
         data.drones = droneManager.GetRuntimeForSave();
 
+        // JSONにして書き込む
         var json = JsonUtility.ToJson(data, true);
         File.WriteAllText(path, json);
         Debug.Log($"[SaveLoadManager] Saved to: {path}");
@@ -186,8 +198,11 @@ public class SaveLoadManager : MonoBehaviour
             return;
         }
 
+        // まず現在のワールドを空にする
         placement.ClearAllPlaced();
+        BuildPlacement.s_baseBuilt = false;
 
+        // BuildingDefをまとめておく（Inspectorに並べてあるならそれを優先）
         BuildingDef[] allDefs = (knownDefs != null && knownDefs.Length > 0)
             ? knownDefs
             : Resources.LoadAll<BuildingDef>("");
@@ -196,6 +211,7 @@ public class SaveLoadManager : MonoBehaviour
         {
             if (string.IsNullOrEmpty(name) || allDefs == null) return null;
 
+            // displayName → prefab name → asset name の順で探す
             var d1 = allDefs.FirstOrDefault(d => d && d.displayName == name);
             if (d1 != null) return d1;
 
@@ -209,24 +225,27 @@ public class SaveLoadManager : MonoBehaviour
             return null;
         }
 
+        // 建物を復元
         foreach (var b in data.buildings)
         {
             var def = FindDef(b.defName);
             if (def == null) continue;
+
             placement.RestoreBuilding(def, b.position, b.fine, b.isBase);
         }
 
+        // Baseを建てたかどうか
         BuildPlacement.s_baseBuilt = data.baseBuilt;
 
+        // ドローンも復元
         droneManager.RestoreFromSave(
             data.queuedTasks,
             data.drones,
             placement,
-            FindDef
+            (name) => FindDef(name)
         );
 
         Debug.Log($"[SaveLoadManager] Loaded from: {path}");
-        SetSlot(slotName);
     }
 
     // =====================================================
@@ -243,34 +262,13 @@ public class SaveLoadManager : MonoBehaviour
         return files;
     }
 
-    // =======================
-    // セーブを1件だけ消す
-    // =======================
     public void DeleteSave(string slotName)
     {
-        if (string.IsNullOrWhiteSpace(slotName))
-            return;
-
-        // "save_012" → パスに変換
         string path = MakePath(slotName);
         if (File.Exists(path))
-        {
             File.Delete(path);
-            Debug.Log("[SaveLoadManager] deleted: " + path);
-        }
-
-        // もし消したのが今のスロットなら記憶も消す
-        string last = PlayerPrefs.GetString(PLAYERPREFS_KEY_LASTSLOT, "");
-        if (last == slotName)
-        {
-            PlayerPrefs.DeleteKey(PLAYERPREFS_KEY_LASTSLOT);
-            PlayerPrefs.Save();
-        }
     }
 
-    // =======================
-    // 全部消す（工場出荷）
-    // =======================
     public void DeleteAllSaves()
     {
         string dir = Application.persistentDataPath;
@@ -278,20 +276,22 @@ public class SaveLoadManager : MonoBehaviour
 
         var files = Directory.GetFiles(dir, "*.json");
         foreach (var f in files)
-        {
             File.Delete(f);
-            Debug.Log("[SaveLoadManager] deleted: " + f);
-        }
+    }
 
-        // 記憶してるスロットも忘れる
-        PlayerPrefs.DeleteKey(PLAYERPREFS_KEY_LASTSLOT);
+    // =====================================================
+    // 内部ユーティリティ
+    // =====================================================
+    public void SetSlot(string slotName)
+    {
+        if (string.IsNullOrWhiteSpace(slotName))
+            return;
+
+        currentSlot = slotName.Trim();
+        PlayerPrefs.SetString(PLAYERPREFS_KEY_LASTSLOT, currentSlot);
         PlayerPrefs.Save();
     }
 
-
-    // =====================================================
-    // 内部ヘルパー
-    // =====================================================
     string MakePath(string slotName)
     {
         if (string.IsNullOrWhiteSpace(slotName))
@@ -316,11 +316,11 @@ public class SaveLoadManager : MonoBehaviour
 
     string GenerateNewSlotName()
     {
-        var files = ListSaveFiles();
-        int idx = 1;
+        // "save", "save_001", "save_002", ... のように増やす
         if (!File.Exists(MakePath("save")))
             return "save";
 
+        int idx = 1;
         while (true)
         {
             string candidate = $"save_{idx:000}";
@@ -329,10 +329,29 @@ public class SaveLoadManager : MonoBehaviour
             idx++;
         }
     }
-    //他のデータに切り替える前にゲームを再起動するためのメソッド
+
+    // いちおう残しておく（同じシーン運用のときに使ったやつ）
     public void ResetCurrentWorld()
     {
-        // ゲーム中に動いているBuildPlacementやDroneBuildManagerを初期状態に戻す
         CreateEmptyWorldState();
+    }
+
+    // ゲーム中の建物・ドローンだけを空にする既存の処理
+    void CreateEmptyWorldState()
+    {
+        if (!EnsureGameRefs()) return;
+
+        placement.ClearAllPlaced();
+        BuildPlacement.s_baseBuilt = false;
+
+        if (droneManager != null)
+        {
+            droneManager.RestoreFromSave(
+                new System.Collections.Generic.List<DroneTaskData>(),
+                new System.Collections.Generic.List<DroneRuntimeData>(),
+                placement,
+                _ => null
+            );
+        }
     }
 }
