@@ -16,6 +16,9 @@ public class SaveData
 
     // いま存在している各ドローンの状態
     public List<DroneRuntimeData> drones = new();
+
+    // HexTilemapFiller などでばら撒いた「資源オブジェクト」
+    public List<ResourceData> resources = new();
 }
 
 [Serializable]
@@ -47,4 +50,11 @@ public class DroneRuntimeData
     public float workProgress;   // 0〜1
     public float workTimer;      // ある程度元に戻す用
     public DroneTaskData task;   // いま持ってるタスク（nullのこともある）
+}
+
+[Serializable]
+public class ResourceData
+{
+    public string defName;
+    public Vector3 position;
 }

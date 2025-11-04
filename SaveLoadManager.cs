@@ -87,7 +87,7 @@ public class SaveLoadManager : MonoBehaviour
         SetSlot(newSlot);
 
         pendingLoadSlot = newSlot;
-        pendingNewGame = true;   // ← このフラグで「ロードじゃなく初期化」とわかる
+        pendingNewGame = true;   //ロードではなく新規作成フラグを立てる
 
         SceneManager.LoadScene(gameSceneName, LoadSceneMode.Single);
     }
@@ -107,26 +107,33 @@ public class SaveLoadManager : MonoBehaviour
 
     IEnumerator LoadGameSceneAfterOneFrame()
     {
-        // 1フレーム待ってGameシーン内のオブジェクトを拾える状態にする
+        // ゲームシーンのオブジェクトが完全に出揃うまで少し待つ
         yield return null;
+        yield return null; // ← 追加でもう1フレーム待つ
 
         // Gameシーン内の参照を拾う
         if (!placement) placement = FindFirstObjectByType<BuildPlacement>();
         if (!droneManager) droneManager = FindFirstObjectByType<DroneBuildManager>();
 
+        // ここで念のため再チェック
+        if (!EnsureGameRefs())
+        {
+            Debug.LogWarning("[SaveLoadManager] Placement/DroneManager not ready yet.");
+            yield break;
+        }
+
         if (pendingNewGame)
         {
-            // 完全にまっさらにしてから保存
+            Debug.Log("[SaveLoadManager] Starting NewGame: create empty world");
             CreateEmptyWorldState();
             SaveTo(currentSlot);
         }
         else if (!string.IsNullOrEmpty(pendingLoadSlot))
         {
-            // 指定スロットからロード
+            Debug.Log($"[SaveLoadManager] Loading slot: {pendingLoadSlot}");
             LoadFrom(pendingLoadSlot);
         }
 
-        // フラグをクリア
         pendingLoadSlot = null;
         pendingNewGame = false;
     }
@@ -167,9 +174,34 @@ public class SaveLoadManager : MonoBehaviour
             });
         }
 
+        // 資源オブジェクト(ResourceMarker付き)をセーブ
+        var resourceMarkers = FindObjectsOfType<ResourceMarker>();
+        foreach (var r in resourceMarkers)
+        {
+            if (r == null || r.def == null) continue;
+
+            // BuildingDef から一意になりそうな名前を選ぶ
+            string defName;
+            if (r.def.prefab != null)
+                defName = r.def.prefab.name;
+            else if (!string.IsNullOrEmpty(r.def.displayName))
+                defName = r.def.displayName;
+            else
+                defName = r.def.name;
+
+            data.resources.Add(new ResourceData
+            {
+                defName = defName,
+                position = r.transform.position
+            });
+        }
+
         // ドローンのキューと実行中
-        data.queuedTasks = droneManager.GetQueuedTasksForSave();
-        data.drones = droneManager.GetRuntimeForSave();
+        if (droneManager != null)
+        {
+            data.queuedTasks = droneManager.GetQueuedTasksForSave();
+            data.drones = droneManager.GetRuntimeForSave();
+        }
 
         // JSONにして書き込む
         var json = JsonUtility.ToJson(data, true);
@@ -201,6 +233,21 @@ public class SaveLoadManager : MonoBehaviour
         // まず現在のワールドを空にする
         placement.ClearAllPlaced();
         BuildPlacement.s_baseBuilt = false;
+
+        // 既存の資源オブジェクト(ResourceMarker付き)も削除
+        var existingResources = FindObjectsOfType<ResourceMarker>();
+        foreach (var r in existingResources)
+        {
+            if (!r) continue;
+#if UNITY_EDITOR
+        if (!Application.isPlaying)
+            DestroyImmediate(r.gameObject);
+        else
+            Destroy(r.gameObject);
+#else
+            Destroy(r.gameObject);
+#endif
+        }
 
         // BuildingDefをまとめておく（Inspectorに並べてあるならそれを優先）
         BuildingDef[] allDefs = (knownDefs != null && knownDefs.Length > 0)
@@ -234,16 +281,34 @@ public class SaveLoadManager : MonoBehaviour
             placement.RestoreBuilding(def, b.position, b.fine, b.isBase);
         }
 
+        // 資源を復元
+        if (data.resources != null)
+        {
+            foreach (var r in data.resources)
+            {
+                var def = FindDef(r.defName);
+                if (def == null || def.prefab == null) continue;
+
+                var obj = Instantiate(def.prefab, r.position, Quaternion.identity);
+                var marker = obj.GetComponent<ResourceMarker>();
+                if (!marker) marker = obj.AddComponent<ResourceMarker>();
+                marker.def = def;
+            }
+        }
+
         // Baseを建てたかどうか
         BuildPlacement.s_baseBuilt = data.baseBuilt;
 
         // ドローンも復元
-        droneManager.RestoreFromSave(
-            data.queuedTasks,
-            data.drones,
-            placement,
-            (name) => FindDef(name)
-        );
+        if (droneManager != null)
+        {
+            droneManager.RestoreFromSave(
+                data.queuedTasks,
+                data.drones,
+                placement,
+                (name) => FindDef(name)
+            );
+        }
 
         Debug.Log($"[SaveLoadManager] Loaded from: {path}");
     }
