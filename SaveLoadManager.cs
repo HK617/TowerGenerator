@@ -1,4 +1,5 @@
 ﻿using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEngine;
@@ -189,11 +190,25 @@ public class SaveLoadManager : MonoBehaviour
             else
                 defName = r.def.name;
 
-            data.resources.Add(new ResourceData
+            var rd = new ResourceData
             {
                 defName = defName,
-                position = r.transform.position
-            });
+                position = r.transform.position,
+                blockPositions = new List<Vector3>()
+            };
+
+            // ★ ResourceMarker の子にある "Blocks" 配下の小ブロックの位置を全部集める
+            var blocksRoot = r.transform.Find("Blocks");
+            if (blocksRoot != null)
+            {
+                foreach (Transform child in blocksRoot)
+                {
+                    if (child != null)
+                        rd.blockPositions.Add(child.position);
+                }
+            }
+
+            data.resources.Add(rd);
         }
 
         // ドローンのキューと実行中
@@ -293,6 +308,17 @@ public class SaveLoadManager : MonoBehaviour
                 var marker = obj.GetComponent<ResourceMarker>();
                 if (!marker) marker = obj.AddComponent<ResourceMarker>();
                 marker.def = def;
+
+                // ★ セーブされていたブロック配置があれば、それで作り直す
+                if (r.blockPositions != null && r.blockPositions.Count > 0)
+                {
+                    // Start() でランダム生成させないようにする
+                    marker.generateOnStart = false;
+
+                    marker.RebuildBlocksFromPositions(r.blockPositions);
+                }
+                // blockPositions が null / 空 のときは、generateOnStart の値に任せる
+                // （＝従来どおり Start() でランダム生成）
             }
         }
 

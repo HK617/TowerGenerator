@@ -550,6 +550,53 @@ public class BuildPlacement : MonoBehaviour
                 return false;
         }
 
+        // 下に資源が無いと置けない建物の判定（Drillタグの有無で判定）
+        bool requiresResource = false;
+        if (_current.prefab != null)
+        {
+            // prefab自体、または子オブジェクトに "Drill" タグがあるか？
+            if (_current.prefab.CompareTag("Drill"))
+                requiresResource = true;
+            else
+            {
+                foreach (var t in _current.prefab.GetComponentsInChildren<Transform>(true))
+                {
+                    if (t.CompareTag("Drill"))
+                    {
+                        requiresResource = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (requiresResource)
+        {
+            bool hasResourceBelow = false;
+
+            // ★ ResourceBlock の「Fineセル」が同じものだけ許可する
+            // fcell がドリルを置こうとしている Fine セル
+            float r = fineCellSize * 0.7f; // ちょっと余裕のある半径
+            var hits = Physics2D.OverlapCircleAll((Vector2)worldCenter, r);
+            foreach (var h in hits)
+            {
+                if (!h.CompareTag("ResourceBlock")) continue;
+
+                // この ResourceBlock が属する Fineセルを求める
+                Vector2Int resCell = WorldToFineCell(h.transform.position, fineCellSize);
+
+                // ドリルのセルと同じなら「真下にある資源」とみなす
+                if (resCell == fcell)
+                {
+                    hasResourceBelow = true;
+                    break;
+                }
+            }
+
+            if (!hasResourceBelow)
+                return false; // 同じ Fineセルに ResourceBlock がなければ置けない
+        }
+
         if (requireBuildableForFine)
         {
             bool hasBuildable = false;

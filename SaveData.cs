@@ -57,4 +57,7 @@ public class ResourceData
 {
     public string defName;
     public Vector3 position;
+
+    // ★ この資源六角の中にある「小さいResourceブロック」のワールド座標一覧
+    public List<Vector3> blockPositions = new();
 }

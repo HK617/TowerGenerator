@@ -133,8 +133,10 @@ public class ResourceMarker : MonoBehaviour
 
                 Vector3 worldPos = new Vector3(p.x, p.y, center.z + zOffset);
 
-                GameObject go = Instantiate(blockPrefab, worldPos, Quaternion.identity, blocksRoot);
-                go.name = blockPrefab.name;   // “(Clone)” を消して見やすく
+                // ★ ResourceBlock タグ付きで生成
+                var go = Instantiate(blockPrefab, worldPos, Quaternion.identity, blocksRoot);
+                go.name = blockPrefab.name;
+                go.tag = "ResourceBlock";
             }
         }
     }
@@ -191,5 +193,26 @@ public class ResourceMarker : MonoBehaviour
             if (inter) inside = !inside;
         }
         return inside;
+    }
+    // --- Resouceブロックの配置復元 ---
+    public void RebuildBlocksFromPositions(List<Vector3> positions)
+    {
+        if (positions == null) return;
+
+        EnsureBlocksRoot();
+        ClearBlocks();
+
+        if (blockPrefab == null)
+        {
+            Debug.LogWarning("[ResourceMarker] blockPrefab が設定されていません。", this);
+            return;
+        }
+
+        foreach (var wp in positions)
+        {
+            var go = Instantiate(blockPrefab, wp, Quaternion.identity, blocksRoot);
+            go.name = blockPrefab.name;
+            go.tag = "ResourceBlock";   // Drill判定用タグ
+        }
     }
 }
