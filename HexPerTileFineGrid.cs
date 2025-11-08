@@ -2,6 +2,7 @@
 using UnityEngine;
 using UnityEngine.Tilemaps;
 using Unity.Cinemachine;
+using UnityEngine.InputSystem;   // ★ 新InputSystem用
 
 /// <summary>
 /// 六角タイル内に ZoomGrid(0.25×0.25) を敷き詰めるオーバーレイ。
@@ -80,6 +81,24 @@ public class HexPerTileFineGrid : MonoBehaviour
     [Tooltip("Buildable 判定に使う半径（タイル中心から）")]
     public float buildableCheckRadius = 0.1f;
 
+    // -------- Mouse Highlight --------
+    [Header("Mouse Highlight")]
+    [Tooltip("マウスを中心に何マス分をハイライトするか（細かいグリッドのマス単位）")]
+    public float mouseRadiusCells = 5f;
+    [Tooltip("マウスハイライトの追従速度（大きいほど即時、0に近いほどゆっくり）")]
+    public float highlightDamping = 10f;
+
+    [Range(0f, 1f)]
+    [Tooltip("マウス周辺マスのアルファ値")]
+    public float highlightAlpha = 0.5f;
+
+    [Range(0f, 1f)]
+    [Tooltip("マウス周辺以外のアルファ値（0 にすると完全非表示）")]
+    public float outsideAlpha = 0f;
+
+    [Tooltip("マウスハイライト機能を使うかどうか")]
+    public bool useMouseHighlight = true;
+
     // すでにこのworld位置の六角に細かいグリッドを生成しているかどうか
     public bool HasFineAtWorld(Vector3 worldPos)
     {
@@ -130,6 +149,38 @@ public class HexPerTileFineGrid : MonoBehaviour
             {
                 foreach (var kv in _loadedParents) kv.Value.gameObject.SetActive(true);
                 _visible = true;
+            }
+
+            // ★ マウス半径ハイライト
+            if (useMouseHighlight)
+            {
+                Vector3? mouseWorldOpt = null;
+
+#if ENABLE_INPUT_SYSTEM
+                var mouse = Mouse.current;
+                if (mouse != null && Camera.main != null)
+                {
+                    Vector2 sp = mouse.position.ReadValue();
+                    Vector3 w = Camera.main.ScreenToWorldPoint(
+                        new Vector3(sp.x, sp.y, -Camera.main.transform.position.z));
+                    w.z = 0f;
+                    mouseWorldOpt = w;
+                }
+#else
+                if (Camera.main != null)
+                {
+                    Vector3 sp = Input.mousePosition;
+                    Vector3 w = Camera.main.ScreenToWorldPoint(
+                        new Vector3(sp.x, sp.y, -Camera.main.transform.position.z));
+                    w.z = 0f;
+                    mouseWorldOpt = w;
+                }
+#endif
+
+                if (mouseWorldOpt.HasValue)
+                {
+                    UpdateMouseHighlight(mouseWorldOpt.Value);
+                }
             }
         }
         else
@@ -218,7 +269,30 @@ public class HexPerTileFineGrid : MonoBehaviour
                     if (!string.IsNullOrEmpty(sortingLayerName))
                     {
                         var sr = go.GetComponent<SpriteRenderer>();
-                        if (sr) { sr.sortingLayerName = sortingLayerName; sr.sortingOrder = sortingOrder; }
+                        if (sr)
+                        {
+                            sr.sortingLayerName = sortingLayerName;
+                            sr.sortingOrder = sortingOrder;
+
+                            // ★ マウスハイライト用に初期アルファを outsideAlpha に
+                            if (useMouseHighlight)
+                            {
+                                var c = sr.color;
+                                c.a = outsideAlpha;
+                                sr.color = c;
+                            }
+                        }
+                    }
+                    else if (useMouseHighlight)
+                    {
+                        // ソートレイヤー未指定でもアルファは調整
+                        var sr = go.GetComponent<SpriteRenderer>();
+                        if (sr)
+                        {
+                            var c = sr.color;
+                            c.a = outsideAlpha;
+                            sr.color = c;
+                        }
                     }
                 }
 
@@ -239,16 +313,10 @@ public class HexPerTileFineGrid : MonoBehaviour
 
                     if (!blockedByLayer)
                     {
-                        // FlowField側にも“いまは書かないで”フラグがあるならそれも見る
-                        // （あれば、なければ無視される）
-                        var ffHasSuppress =
-                            flowField.GetType().GetField("suppressExternalMarks") != null;
-                        if (ffHasSuppress)
+                        var ffField = flowField.GetType().GetField("suppressExternalMarks");
+                        if (ffField != null)
                         {
-                            // リフレクションを避けたいなら、FlowField側に public bool suppressExternalMarks; を実装してください
-                            bool suppress = (bool)flowField.GetType()
-                                .GetField("suppressExternalMarks")
-                                .GetValue(flowField);
+                            bool suppress = (bool)ffField.GetValue(flowField);
                             if (!suppress)
                                 flowField.MarkWalkable(p.x, p.y);
                         }
@@ -303,6 +371,48 @@ public class HexPerTileFineGrid : MonoBehaviour
             }
         }
         _loadedParents.Clear();
+    }
+
+    // ===== Mouse Highlight =====
+    void UpdateMouseHighlight(Vector3 mouseWorld)
+    {
+        float radiusWorld = mouseRadiusCells * squareSize;
+        float radiusSqr = radiusWorld * radiusWorld;
+
+        foreach (var kv in _loadedParents)
+        {
+            var parent = kv.Value;
+            if (!parent) continue;
+            if (!parent.gameObject.activeInHierarchy) continue;
+
+            foreach (Transform child in parent)
+            {
+                var sr = child.GetComponent<SpriteRenderer>();
+                if (!sr) continue;
+
+                Vector3 pos = child.position;
+                float dx = pos.x - mouseWorld.x;
+                float dy = pos.y - mouseWorld.y;
+                float distSqr = dx * dx + dy * dy;
+
+                // 目標α
+                float targetAlpha = (distSqr <= radiusSqr) ? highlightAlpha : outsideAlpha;
+
+                // 現在αを取得
+                Color c = sr.color;
+                float currentAlpha = c.a;
+
+                // ★ Lerp でダンピング補間
+                float newAlpha = Mathf.Lerp(currentAlpha, targetAlpha, highlightDamping * Time.deltaTime);
+
+                // 更新（変化がごく小さいときはスキップしてもよい）
+                if (!Mathf.Approximately(currentAlpha, newAlpha))
+                {
+                    c.a = newAlpha;
+                    sr.color = c;
+                }
+            }
+        }
     }
 
     // ===== Wanted set : center + 6 neighbors =====
