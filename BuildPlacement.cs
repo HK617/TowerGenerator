@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+ï»¿using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Tilemaps;
@@ -9,7 +9,7 @@ using Unity.Cinemachine;
 
 public class BuildPlacement : MonoBehaviour
 {
-    // ƒvƒŒƒrƒ…[’†‚È‚ÇuŒš’z‚ğˆê“I‚É‹Ö~v‚·‚é‚½‚ß‚Ìƒtƒ‰ƒO
+    // ãƒ—ãƒ¬ãƒ“ãƒ¥ãƒ¼ä¸­ãªã©ã€Œå»ºç¯‰ã‚’ä¸€æ™‚çš„ã«ç¦æ­¢ã€ã™ã‚‹ãŸã‚ã®ãƒ•ãƒ©ã‚°
     public static bool s_buildLocked = false;
 
     [Header("=== Common targets ===")]
@@ -20,14 +20,14 @@ public class BuildPlacement : MonoBehaviour
     public Tilemap groundTilemap;
     public bool requireUnderlyingTile = true;
 
-    [Header("=== Fine-cell placement (0.25 ~ 0.25) ===")]
+    [Header("=== Fine-cell placement (0.25 Ã— 0.25) ===")]
     public bool useFineGrid = false;
     public float fineCellSize = 0.25f;
     public Tilemap hexTilemap;
     public bool requireBuildableForFine = true;
     public float fineBuildableRadius = 0.1f;
 
-    [Tooltip("FlowField ‚ª‚ ‚é‚È‚çA’u‚¢‚½/Á‚µ‚½‚Æ‚«‚ÉƒuƒƒbƒNó‘Ô‚ğ“`‚¦‚é")]
+    [Tooltip("FlowField ãŒã‚ã‚‹ãªã‚‰ã€ç½®ã„ãŸ/æ¶ˆã—ãŸã¨ãã«ãƒ–ãƒ­ãƒƒã‚¯çŠ¶æ…‹ã‚’ä¼ãˆã‚‹")]
     public FlowField025 flowField;
 
     [Header("=== Preview (ghost) ===")]
@@ -48,21 +48,26 @@ public class BuildPlacement : MonoBehaviour
     public float fineGridThreshold = 3f;
 
     [Header("=== Drone build ===")]
-    [Tooltip("true‚È‚çAŒš•¨‚Í‚·‚®‚É‚ÍŒš‚½‚¸Aƒhƒ[ƒ“‚ª—ˆ‚Ä‚©‚çŒš‚Â")]
+    [Tooltip("trueãªã‚‰ã€å»ºç‰©ã¯ã™ãã«ã¯å»ºãŸãšã€ãƒ‰ãƒ­ãƒ¼ãƒ³ãŒæ¥ã¦ã‹ã‚‰å»ºã¤")]
     public bool useDroneBuild = true;
     public DroneBuildManager droneManager;
 
     [Header("=== Base auto place ===")]
-    [Tooltip("Å‰‚Ì1‰ñ‚¾‚¯‚±‚ê‚ğŒš‚Ä‚éBƒ†[ƒU[‚ª•Ê‚ÌŒš•¨‚ğ‘I‚ñ‚Å‚¢‚Ä‚àBase‚É‚È‚é")]
+    [Tooltip("æœ€åˆã®1å›ã ã‘ã“ã‚Œã‚’å»ºã¦ã‚‹ã€‚ãƒ¦ãƒ¼ã‚¶ãƒ¼ãŒåˆ¥ã®å»ºç‰©ã‚’é¸ã‚“ã§ã„ã¦ã‚‚Baseã«ãªã‚‹")]
     public BuildingDef baseDef;
 
-    [Tooltip("Base‚Æ“¯‚É‰º‚É•~‚­˜ZŠpƒ^ƒCƒ‹‚Ì BuildingDef")]
+    [Tooltip("Baseã¨åŒæ™‚ã«ä¸‹ã«æ•·ãå…­è§’ã‚¿ã‚¤ãƒ«ã® BuildingDef")]
     public BuildingDef baseHexDef;
 
-    // Base ‚ªÀÛ‚ÉuŠ®¬v‚µ‚½‚©‚Ç‚¤‚©iƒhƒ[ƒ“‚ÅŒš‚ÄI‚í‚Á‚½“_‚Å truej
+    // Base ãŒå®Ÿéš›ã«ã€Œå®Œæˆã€ã—ãŸã‹ã©ã†ã‹ï¼ˆãƒ‰ãƒ­ãƒ¼ãƒ³ã§å»ºã¦çµ‚ã‚ã£ãŸæ™‚ç‚¹ã§ trueï¼‰
     public static bool s_baseBuilt = false;
 
-    // ˜A‘±İ’u’†‚©‚Ç‚¤‚©
+    [Header("=== Rotation ===")]
+    [Tooltip("Rã‚­ãƒ¼ã‚’æŠ¼ã—ãŸã¨ãã«å›è»¢ã™ã‚‹è§’åº¦ï¼ˆåº¦ï¼‰")]
+    public float rotationStepDeg = 90f;
+    float _currentRotationDeg = 0f;
+
+    // é€£ç¶šè¨­ç½®ä¸­ã‹ã©ã†ã‹
     bool _isDragging = false;
     readonly List<(Vector2Int cell, Vector3 center)> _previewCells = new();
     readonly List<GameObject> _dragGhosts = new();
@@ -75,7 +80,7 @@ public class BuildPlacement : MonoBehaviour
     readonly Dictionary<Vector2Int, GameObject> _placedFine = new();
     readonly HashSet<Vector3Int> _protectedCells = new();
 
-    // ===== ƒZ[ƒu—p\‘¢‘Ì =====
+    // ===== ã‚»ãƒ¼ãƒ–ç”¨æ§‹é€ ä½“ =====
     public struct SavedBuilding
     {
         public string defName;
@@ -102,11 +107,26 @@ public class BuildPlacement : MonoBehaviour
     {
         _current = def;
         ClearPreview();
+        // é¸æŠã‚’å¤‰ãˆãŸã‚‰å›è»¢ã‚‚ãƒªã‚»ãƒƒãƒˆã—ã¦ãŠã
+        _currentRotationDeg = 0f;
+    }
+
+    bool IsRotatable(BuildingDef def)
+    {
+        if (def == null) return false;
+        if (def.allowRotation) return true;
+        if (def.prefab == null) return false;
+        return def.prefab.GetComponentInChildren<ConveyorBelt>(true) != null;
+    }
+
+    bool IsCurrentRotatable()
+    {
+        return IsRotatable(_current);
     }
 
     void Update()
     {
-        // š ƒvƒŒƒrƒ…[’†‚ÍŒš’z‚µ‚È‚¢
+        // â˜… ãƒ—ãƒ¬ãƒ“ãƒ¥ãƒ¼ä¸­ã¯å»ºç¯‰ã—ãªã„
         if (s_buildLocked)
         {
             UpdatePointerActive(false, false);
@@ -123,7 +143,16 @@ public class BuildPlacement : MonoBehaviour
 
 #if ENABLE_INPUT_SYSTEM
         var mouse = Mouse.current;
-        if (mouse == null || Camera.main == null) return;
+        var keyboard = Keyboard.current;
+        if (mouse == null || keyboard == null || Camera.main == null) return;
+
+        // â˜… Rã‚­ãƒ¼ã§å›è»¢
+        if (keyboard.rKey.wasPressedThisFrame && IsCurrentRotatable())
+        {
+            _currentRotationDeg -= rotationStepDeg;
+            if (_currentRotationDeg <= -360f) _currentRotationDeg += 360f;
+            if (_currentRotationDeg >= 360f)  _currentRotationDeg -= 360f;
+        }
 
         Vector2 sp = mouse.position.ReadValue();
         Vector3 world = Camera.main.ScreenToWorldPoint(new Vector3(sp.x, sp.y, -Camera.main.transform.position.z));
@@ -153,6 +182,12 @@ public class BuildPlacement : MonoBehaviour
             if (_spawnedPreviewGO)
             {
                 _spawnedPreviewGO.transform.position = finalCenter;
+
+                if (IsCurrentRotatable())
+                    _spawnedPreviewGO.transform.rotation = Quaternion.Euler(0f, 0f, _currentRotationDeg);
+                else
+                    _spawnedPreviewGO.transform.rotation = Quaternion.identity;
+
                 var col = canHere ? new Color(1f, 1f, 1f, previewAlpha)
                                   : new Color(1f, 0.4f, 0.4f, previewAlpha);
                 SetSpriteColor(_spawnedPreviewGO.transform, col);
@@ -239,7 +274,7 @@ public class BuildPlacement : MonoBehaviour
         }
     }
 
-    // ========================= ƒY[ƒ€ƒAƒEƒg(˜ZŠp)Œn =========================
+    // ========================= ã‚ºãƒ¼ãƒ ã‚¢ã‚¦ãƒˆ(å…­è§’)ç³» =========================
     void ShowPointerForHexHover(Vector3Int cell)
     {
         if (groundTilemap == null)
@@ -264,7 +299,7 @@ public class BuildPlacement : MonoBehaviour
             return;
         if (!CanPlaceAtBig(cell)) return;
 
-        // ‚Ü‚¾Base‚ªŒš‚Á‚Ä‚¢‚È‚¢‚È‚çAƒ†[ƒU[‚ª‰½‚ğ‘I‚ñ‚Å‚¢‚Ä‚à baseDef ‚ğŒš‚Ä‚é
+        // ã¾ã BaseãŒå»ºã£ã¦ã„ãªã„ãªã‚‰ã€ãƒ¦ãƒ¼ã‚¶ãƒ¼ãŒä½•ã‚’é¸ã‚“ã§ã„ã¦ã‚‚ baseDef ã‚’å»ºã¦ã‚‹
         BuildingDef defToPlace = _current;
         bool isFirstBase = false;
         if (!s_baseBuilt && baseDef != null)
@@ -276,10 +311,14 @@ public class BuildPlacement : MonoBehaviour
         if (defToPlace == null) return;
 
         Vector3 pos = grid.GetCellCenterWorld(cell) + hoverOffset;
+        Quaternion rot = IsRotatable(defToPlace)
+            ? Quaternion.Euler(0f, 0f, _currentRotationDeg)
+            : Quaternion.identity;
+
 
         if (useDroneBuild && droneManager != null)
         {
-            GameObject ghost = Instantiate(defToPlace.prefab, pos, Quaternion.identity, prefabParent);
+            GameObject ghost = Instantiate(defToPlace.prefab, pos, rot, prefabParent);
             DisableColliders(ghost.transform);
             SetSpriteColor(ghost.transform, new Color(1f, 1f, 1f, previewAlpha));
 
@@ -291,7 +330,7 @@ public class BuildPlacement : MonoBehaviour
         }
         else
         {
-            var go = Instantiate(defToPlace.prefab, pos, Quaternion.identity, prefabParent);
+            var go = Instantiate(defToPlace.prefab, pos, rot, prefabParent);
             _placedByCell[cell] = go;
 
             if (isFirstBase)
@@ -311,19 +350,19 @@ public class BuildPlacement : MonoBehaviour
         }
     }
 
-    // ƒhƒ[ƒ“‚ªŠ®—¹‚µ‚½‚Æ‚«‚ÉŒÄ‚ÔA˜ZŠp(ƒrƒbƒO)ƒZƒ‹—p‚ÌŒy—ÊŠ®¬ˆ—
+    // ãƒ‰ãƒ­ãƒ¼ãƒ³ãŒå®Œäº†ã—ãŸã¨ãã«å‘¼ã¶ã€å…­è§’(ãƒ“ãƒƒã‚°)ã‚»ãƒ«ç”¨ã®è»½é‡å®Œæˆå‡¦ç†
     public void FinalizeBigPlacement(BuildingDef def, Vector3Int cell, Vector3 pos, GameObject ghost)
     {
         if (def == null) return;
 
         GameObject placedGo = null;
 
-        // Base‚ªŠ®¬‚µ‚½‚Æ‚«‚Ìˆ—iƒhƒ[ƒ“”Åj
+        // BaseãŒå®Œæˆã—ãŸã¨ãã®å‡¦ç†ï¼ˆãƒ‰ãƒ­ãƒ¼ãƒ³ç‰ˆï¼‰
         if (!s_baseBuilt && baseDef != null && def == baseDef)
         {
-            // Šî–{‚ÍRestoreBaseAt‚Æ“¯‚¶‚±‚Æ‚ğ‚â‚é
+            // åŸºæœ¬ã¯RestoreBaseAtã¨åŒã˜ã“ã¨ã‚’ã‚„ã‚‹
             RestoreBaseAt(def, pos);
-            // ‚½‚¾‚µA¡‚ÌƒS[ƒXƒg‚ğÌ—p‚·‚é‚È‚çã‘‚«
+            // ãŸã ã—ã€ä»Šã®ã‚´ãƒ¼ã‚¹ãƒˆã‚’æ¡ç”¨ã™ã‚‹ãªã‚‰ä¸Šæ›¸ã
             if (ghost != null)
             {
                 SetSpriteColor(ghost.transform, Color.white);
@@ -351,6 +390,7 @@ public class BuildPlacement : MonoBehaviour
         }
         else
         {
+            // ã“ã“ã§ã¯ _currentRotationDeg ã¯ä½¿ã‚ãšã€ã‚´ãƒ¼ã‚¹ãƒˆç„¡ã—å»ºç¯‰ã¯ãƒ‡ãƒ•ã‚©ãƒ«ãƒˆå‘ãã«ã—ã¦ãŠã
             var go = Instantiate(def.prefab, pos, Quaternion.identity, prefabParent);
             _placedByCell[cell] = go;
             placedGo = go;
@@ -360,22 +400,22 @@ public class BuildPlacement : MonoBehaviour
             RegisterBuildingToFlowField(def, pos, true);
     }
 
-    // š Baseê—p‚Ì•œŒ³iƒ[ƒh‚âƒhƒ[ƒ“Š®—¹‚É‹¤’Ê‚Åg‚¤j
+    // â˜… Baseå°‚ç”¨ã®å¾©å…ƒï¼ˆãƒ­ãƒ¼ãƒ‰æ™‚ã‚„ãƒ‰ãƒ­ãƒ¼ãƒ³å®Œäº†æ™‚ã«å…±é€šã§ä½¿ã†ï¼‰
     void RestoreBaseAt(BuildingDef baseDefToUse, Vector3 pos)
     {
         if (baseDefToUse == null) return;
 
-        // 1) Base–{‘Ì
+        // 1) Baseæœ¬ä½“
         var baseGO = Instantiate(baseDefToUse.prefab, pos, Quaternion.identity, prefabParent);
 
         var cell = grid.WorldToCell(pos - hoverOffset);
         _placedByCell[cell] = baseGO;
 
-        // 2) Baseƒtƒ‰ƒO‚Æ•ÛŒì
+        // 2) Baseãƒ•ãƒ©ã‚°ã¨ä¿è­·
         s_baseBuilt = true;
         _protectedCells.Add(cell);
 
-        // 3) ‰º‚É˜ZŠpƒ^ƒCƒ‹‚ğ•~‚­
+        // 3) ä¸‹ã«å…­è§’ã‚¿ã‚¤ãƒ«ã‚’æ•·ã
         if (baseHexDef != null && baseHexDef.prefab != null)
         {
             var hexGo = Instantiate(baseHexDef.prefab, pos, Quaternion.identity, prefabParent);
@@ -385,20 +425,20 @@ public class BuildPlacement : MonoBehaviour
                 c.enabled = false;
         }
 
-        // 4) ×‚©‚¢ƒOƒŠƒbƒh‚ğ‹­§¶¬
+        // 4) ç´°ã‹ã„ã‚°ãƒªãƒƒãƒ‰ã‚’å¼·åˆ¶ç”Ÿæˆ
         var hexFine = Object.FindFirstObjectByType<HexPerTileFineGrid>();
         if (hexFine != null)
         {
             hexFine.ForceCreateAtWorld(pos);
         }
 
-        // 5) FlowFieldƒS[ƒ‹‚É‚·‚é
+        // 5) FlowFieldã‚´ãƒ¼ãƒ«ã«ã™ã‚‹
         if (flowField != null)
         {
             flowField.SetTargetWorld(pos);
         }
 
-        // 6) UI‚Ö
+        // 6) UIã¸
         var ui = Object.FindFirstObjectByType<StartMenuUI>();
         if (ui != null)
         {
@@ -456,13 +496,18 @@ public class BuildPlacement : MonoBehaviour
 
         if (_spawnedPreviewGO)
         {
+            if (IsCurrentRotatable())
+                _spawnedPreviewGO.transform.rotation = Quaternion.Euler(0f, 0f, _currentRotationDeg);
+            else
+                _spawnedPreviewGO.transform.rotation = Quaternion.identity;
+
             var col = can ? new Color(1f, 1f, 1f, previewAlpha)
                           : new Color(1f, 0.4f, 0.4f, previewAlpha);
             SetSpriteColor(_spawnedPreviewGO.transform, col);
         }
     }
 
-    // ========================= ×‚©‚¢ƒOƒŠƒbƒhŒn =========================
+    // ========================= ç´°ã‹ã„ã‚°ãƒªãƒƒãƒ‰ç³» =========================
     void PlaceAtFine(Vector2Int fcell, Vector3 worldCenter)
     {
         if (_current?.prefab == null) return;
@@ -470,7 +515,11 @@ public class BuildPlacement : MonoBehaviour
         Vector3 finalCenter = worldCenter;
         if (!CanPlaceAtFine(fcell, finalCenter)) return;
 
-        GameObject ghost = Instantiate(_current.prefab, finalCenter, Quaternion.identity, prefabParent);
+        Quaternion rot = IsCurrentRotatable()
+            ? Quaternion.Euler(0f, 0f, _currentRotationDeg)
+            : Quaternion.identity;
+
+        GameObject ghost = Instantiate(_current.prefab, finalCenter, rot, prefabParent);
         DisableColliders(ghost.transform);
         SetSpriteColor(ghost.transform, new Color(1f, 1f, 1f, previewAlpha));
 
@@ -550,11 +599,11 @@ public class BuildPlacement : MonoBehaviour
                 return false;
         }
 
-        // ‰º‚É‘Œ¹‚ª–³‚¢‚Æ’u‚¯‚È‚¢Œš•¨‚Ì”»’èiDrillƒ^ƒO‚Ì—L–³‚Å”»’èj
+        // ä¸‹ã«è³‡æºãŒç„¡ã„ã¨ç½®ã‘ãªã„å»ºç‰©ã®åˆ¤å®šï¼ˆDrillã‚¿ã‚°ã®æœ‰ç„¡ã§åˆ¤å®šï¼‰
         bool requiresResource = false;
         if (_current.prefab != null)
         {
-            // prefab©‘ÌA‚Ü‚½‚ÍqƒIƒuƒWƒFƒNƒg‚É "Drill" ƒ^ƒO‚ª‚ ‚é‚©H
+            // prefabè‡ªä½“ã€ã¾ãŸã¯å­ã‚ªãƒ–ã‚¸ã‚§ã‚¯ãƒˆã« "Drill" ã‚¿ã‚°ãŒã‚ã‚‹ã‹ï¼Ÿ
             if (_current.prefab.CompareTag("Drill"))
                 requiresResource = true;
             else
@@ -574,18 +623,18 @@ public class BuildPlacement : MonoBehaviour
         {
             bool hasResourceBelow = false;
 
-            // š ResourceBlock ‚ÌuFineƒZƒ‹v‚ª“¯‚¶‚à‚Ì‚¾‚¯‹–‰Â‚·‚é
-            // fcell ‚ªƒhƒŠƒ‹‚ğ’u‚±‚¤‚Æ‚µ‚Ä‚¢‚é Fine ƒZƒ‹
-            float r = fineCellSize * 0.7f; // ‚¿‚å‚Á‚Æ—]—T‚Ì‚ ‚é”¼Œa
+            // â˜… ResourceBlock ã®ã€ŒFineã‚»ãƒ«ã€ãŒåŒã˜ã‚‚ã®ã ã‘è¨±å¯ã™ã‚‹
+            // fcell ãŒãƒ‰ãƒªãƒ«ã‚’ç½®ã“ã†ã¨ã—ã¦ã„ã‚‹ Fine ã‚»ãƒ«
+            float r = fineCellSize * 0.7f; // ã¡ã‚‡ã£ã¨ä½™è£•ã®ã‚ã‚‹åŠå¾„
             var hits = Physics2D.OverlapCircleAll((Vector2)worldCenter, r);
             foreach (var h in hits)
             {
                 if (!h.CompareTag("ResourceBlock")) continue;
 
-                // ‚±‚Ì ResourceBlock ‚ª‘®‚·‚é FineƒZƒ‹‚ğ‹‚ß‚é
+                // ã“ã® ResourceBlock ãŒå±ã™ã‚‹ Fineã‚»ãƒ«ã‚’æ±‚ã‚ã‚‹
                 Vector2Int resCell = WorldToFineCell(h.transform.position, fineCellSize);
 
-                // ƒhƒŠƒ‹‚ÌƒZƒ‹‚Æ“¯‚¶‚È‚çu^‰º‚É‚ ‚é‘Œ¹v‚Æ‚İ‚È‚·
+                // ãƒ‰ãƒªãƒ«ã®ã‚»ãƒ«ã¨åŒã˜ãªã‚‰ã€ŒçœŸä¸‹ã«ã‚ã‚‹è³‡æºã€ã¨ã¿ãªã™
                 if (resCell == fcell)
                 {
                     hasResourceBelow = true;
@@ -594,7 +643,7 @@ public class BuildPlacement : MonoBehaviour
             }
 
             if (!hasResourceBelow)
-                return false; // “¯‚¶ FineƒZƒ‹‚É ResourceBlock ‚ª‚È‚¯‚ê‚Î’u‚¯‚È‚¢
+                return false; // åŒã˜ Fineã‚»ãƒ«ã« ResourceBlock ãŒãªã‘ã‚Œã°ç½®ã‘ãªã„
         }
 
         if (requireBuildableForFine)
@@ -700,13 +749,16 @@ public class BuildPlacement : MonoBehaviour
             flowField.Rebuild();
     }
 
-    // ========================= ‹¤’Êƒ†[ƒeƒBƒŠƒeƒB =========================
+    // ========================= å…±é€šãƒ¦ãƒ¼ãƒ†ã‚£ãƒªãƒ†ã‚£ =========================
     void MovePreview(Vector3 world)
     {
         if (_current?.prefab == null) return;
         EnsurePrefabPreview();
         if (_spawnedPreviewGO)
+        {
             _spawnedPreviewGO.transform.position = world;
+            _spawnedPreviewGO.transform.rotation = Quaternion.Euler(0f, 0f, _currentRotationDeg);
+        }
     }
 
     void EnsurePrefabPreview()
@@ -750,7 +802,7 @@ public class BuildPlacement : MonoBehaviour
     {
         if (_current?.prefab == null) return;
 
-        var go = Instantiate(_current.prefab, pos, Quaternion.identity);
+        var go = Instantiate(_current.prefab, pos, Quaternion.Euler(0f, 0f, _currentRotationDeg));
         if (prefabPreview) go.transform.SetParent(prefabPreview, true);
 
         DisableColliders(go.transform);
@@ -896,24 +948,24 @@ public class BuildPlacement : MonoBehaviour
         return new Vector3(x, y, 0f);
     }
 
-    // ===== ‚±‚±‚©‚çƒZ[ƒu/ƒ[ƒh‚Åg‚¤ŒöŠJAPI =====
+    // ===== ã“ã“ã‹ã‚‰ã‚»ãƒ¼ãƒ–/ãƒ­ãƒ¼ãƒ‰ã§ä½¿ã†å…¬é–‹API =====
 
-    // ‚¢‚ÜƒV[ƒ“‚É’u‚©‚ê‚Ä‚¢‚éŒš•¨‚ğ‘S•”—ñ‹“‚·‚é
+    // ã„ã¾ã‚·ãƒ¼ãƒ³ã«ç½®ã‹ã‚Œã¦ã„ã‚‹å»ºç‰©ã‚’å…¨éƒ¨åˆ—æŒ™ã™ã‚‹
     public List<SavedBuilding> CollectForSave()
     {
         var list = new List<SavedBuilding>();
 
-        // ˜ZŠp(‘å)
+        // å…­è§’(å¤§)
         foreach (var kv in _placedByCell)
         {
             var go = kv.Value;
             if (!go) continue;
 
-            // š BuildingMarker ‚Íg‚í‚È‚¢BƒvƒŒƒnƒu–¼‚©‚çæ‚é
+            // â˜… BuildingMarker ã¯ä½¿ã‚ãªã„ã€‚ãƒ—ãƒ¬ãƒãƒ–åã‹ã‚‰å–ã‚‹
             string defName = go.name.Replace("(Clone)", "").Trim();
 
             bool isBase = false;
-            // baseDef ‚ªİ’è‚³‚ê‚Ä‚¢‚ÄAƒvƒŒƒnƒu–¼‚ª‚»‚ê‚Æ“¯‚¶‚È‚ç Base ‚Æ‚İ‚È‚·
+            // baseDef ãŒè¨­å®šã•ã‚Œã¦ã„ã¦ã€ãƒ—ãƒ¬ãƒãƒ–åãŒãã‚Œã¨åŒã˜ãªã‚‰ Base ã¨ã¿ãªã™
             if (baseDef != null && defName == baseDef.prefab.name)
                 isBase = true;
 
@@ -926,8 +978,8 @@ public class BuildPlacement : MonoBehaviour
             });
         }
 
-        // ×‚©‚¢ƒOƒŠƒbƒh
-        // “¯‚¶GameObject‚ª•¡”‚ÌƒZƒ‹‚É“ü‚Á‚Ä‚é‰Â”\«‚ª‚ ‚é‚Ì‚ÅAˆêˆÓ‚É‚·‚é
+        // ç´°ã‹ã„ã‚°ãƒªãƒƒãƒ‰
+        // åŒã˜GameObjectãŒè¤‡æ•°ã®ã‚»ãƒ«ã«å…¥ã£ã¦ã‚‹å¯èƒ½æ€§ãŒã‚ã‚‹ã®ã§ã€ä¸€æ„ã«ã™ã‚‹
         var added = new HashSet<GameObject>();
         foreach (var kv in _placedFine)
         {
@@ -943,14 +995,14 @@ public class BuildPlacement : MonoBehaviour
                 defName = defName,
                 position = go.transform.position,
                 isFine = true,
-                isBase = false   // ×‚©‚¢ƒOƒŠƒbƒh‚Ì‚â‚Â‚ÍBase‚É‚Í‚µ‚È‚¢
+                isBase = false   // ç´°ã‹ã„ã‚°ãƒªãƒƒãƒ‰ã®ã‚„ã¤ã¯Baseã«ã¯ã—ãªã„
             });
         }
 
         return list;
     }
 
-    // ‚¢‚Ü’u‚¢‚Ä‚ ‚éŒš•¨‚ğ‘S•”Á‚·iƒ[ƒh‚ÌÅ‰‚ÅŒÄ‚Ôj
+    // ã„ã¾ç½®ã„ã¦ã‚ã‚‹å»ºç‰©ã‚’å…¨éƒ¨æ¶ˆã™ï¼ˆãƒ­ãƒ¼ãƒ‰æ™‚ã®æœ€åˆã§å‘¼ã¶ï¼‰
     public void ClearAllPlaced()
     {
         foreach (var kv in _placedByCell)
@@ -966,7 +1018,7 @@ public class BuildPlacement : MonoBehaviour
         _protectedCells.Clear();
     }
 
-    // ƒZ[ƒuƒf[ƒ^‚©‚ç1ŒÂ‚Ô‚ñ•œŒ³‚·‚é
+    // ã‚»ãƒ¼ãƒ–ãƒ‡ãƒ¼ã‚¿ã‹ã‚‰1å€‹ã¶ã‚“å¾©å…ƒã™ã‚‹
     public void RestoreBuilding(BuildingDef def, Vector3 pos, bool fine, bool isBase)
     {
         if (isBase)
@@ -996,7 +1048,7 @@ public class BuildPlacement : MonoBehaviour
         }
     }
 
-    // ƒ[ƒh‚Éu‚±‚Ìƒ^ƒXƒN‚ÌƒS[ƒXƒg‚ğÄ¶¬‚µ‚½‚¢v‚½‚ß‚ÌAPI
+    // ãƒ­ãƒ¼ãƒ‰æ™‚ã«ã€Œã“ã®ã‚¿ã‚¹ã‚¯ã®ã‚´ãƒ¼ã‚¹ãƒˆã‚’å†ç”Ÿæˆã—ãŸã„ã€ãŸã‚ã®API
     public GameObject CreateGhostForDef(BuildingDef def, Vector3 pos, bool fine)
     {
         if (def == null) return null;

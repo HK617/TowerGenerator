@@ -23,6 +23,9 @@ public class BuildingDef : ScriptableObject
     [Tooltip("設置したらFlowFieldを即Rebuildするか。falseにするとまとめて軽くできる。")]
     public bool rebuildAfterPlace = true;
 
+    [Tooltip("回転可能なオブジェクトかどうか。TrueにするとRキーで回転させられる")]
+    public bool allowRotation = false;
+
     // ========= ここから保存用バックアップ =========
     // Unity は bool[,] を保存できないので、フラットなリストにしておく
     [SerializeField, HideInInspector] int shapeSize = 3;

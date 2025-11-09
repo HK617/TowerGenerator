@@ -12,6 +12,7 @@ public class BuildingDefEditor : Editor
     SerializedProperty cellsWidth;
     SerializedProperty cellsHeight;
     SerializedProperty rebuildAfterPlace;
+    SerializedProperty allowRotation;
 
     BuildingDef def;
 
@@ -26,6 +27,7 @@ public class BuildingDefEditor : Editor
         cellsWidth = serializedObject.FindProperty("cellsWidth");
         cellsHeight = serializedObject.FindProperty("cellsHeight");
         rebuildAfterPlace = serializedObject.FindProperty("rebuildAfterPlace");
+        allowRotation = serializedObject.FindProperty("allowRotation");
 
         // シリアライズされたデータ → 実体配列 に起こす
         def.RestoreShape();
@@ -40,6 +42,7 @@ public class BuildingDefEditor : Editor
         EditorGUILayout.PropertyField(prefab);
         EditorGUILayout.PropertyField(isHexTile);
         EditorGUILayout.PropertyField(hotkey);
+        EditorGUILayout.PropertyField(allowRotation);
 
         EditorGUILayout.Space(10);
         EditorGUILayout.LabelField("FlowField Block Shape", EditorStyles.boldLabel);
