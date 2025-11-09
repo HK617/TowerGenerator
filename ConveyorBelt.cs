@@ -1,33 +1,41 @@
-using UnityEngine;
+ï»¿using UnityEngine;
 
 /// <summary>
-/// ŠÈˆÕƒRƒ“ƒxƒA:
-/// EAddItem ‚ÅƒAƒCƒeƒ€ƒvƒŒƒnƒu‚ğó‚¯æ‚é
-/// EƒAƒCƒeƒ€‚É‚Í ItemOnBeltMover ‚ğ•t‚¯A
-///   uƒRƒ“ƒxƒA[‚Ìã‚É‚¢‚éŠÔ‚¾‚¯vis•ûŒü‚É“®‚©‚·B
-/// Eis•ûŒü‚ÍƒRƒ“ƒxƒA[–{‘Ì‚Ì‰ñ“]itransform.rightj‚©‚ç©“®Œˆ’èB
+/// å˜ç´”ãªã‚³ãƒ³ãƒ™ã‚¢ãƒ¼ãƒ™ãƒ«ãƒˆ:
+/// ãƒ»AddItem ã§ã‚¢ã‚¤ãƒ†ãƒ ã‚’å—ã‘å–ã‚Šã€ItemOnBeltMover ã«ãƒ™ãƒ«ãƒˆæƒ…å ±ã‚’æ¸¡ã™
+/// ãƒ»moveDirection ã¯ã€Œã“ã®ãƒ™ãƒ«ãƒˆä¸Šã§ã®ã‚¢ã‚¤ãƒ†ãƒ ã®é€²è¡Œæ–¹å‘ã€ï¼ˆãƒ¯ãƒ¼ãƒ«ãƒ‰åº§æ¨™ï¼‰
+///   ConveyorBeltAutoConnector ã‹ã‚‰ä¸Šæ›¸ãã•ã‚Œã¾ã™ã€‚
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(Collider2D))]
 public class ConveyorBelt : MonoBehaviour
 {
     [Header("Move")]
-    [Tooltip("ƒAƒCƒeƒ€‚ğ—¬‚·•ûŒüiƒ[ƒ‹ƒh‹óŠÔjBAwake‚É transform.right ‚©‚ç©“®İ’è‚³‚ê‚Ü‚·B")]
-    public Vector2 moveDirection = Vector2.right;
+    [Tooltip("ã‚¢ã‚¤ãƒ†ãƒ ã‚’æµã™ãƒ¯ãƒ¼ãƒ«ãƒ‰æ–¹å‘ã€‚Awake ã§ transform.up ãŒå…¥ã‚Šã¾ã™ã€‚")]
+    public Vector2 moveDirection = Vector2.up;
 
-    [Tooltip("ƒAƒCƒeƒ€‚ÌˆÚ“®‘¬“x")]
+    [Tooltip("ã‚¢ã‚¤ãƒ†ãƒ ã®ç§»å‹•é€Ÿåº¦")]
     public float moveSpeed = 2f;
 
     [Header("Spawn")]
-    [Tooltip("ƒAƒCƒeƒ€‚ğo‚·ˆÊ’uB–¢w’è‚È‚çƒxƒ‹ƒg‚Ì’†S")]
+    [Tooltip("ã‚¢ã‚¤ãƒ†ãƒ ã‚’å‡ºã™ä½ç½®ã€‚æœªæŒ‡å®šãªã‚‰ãƒ™ãƒ«ãƒˆã®ä¸­å¿ƒ")]
     public Transform itemSpawnPoint;
 
-    [Tooltip("¶¬‚µ‚½ƒAƒCƒeƒ€‚ğ‚±‚ÌƒIƒuƒWƒFƒNƒg‚Ìq‚É‚·‚é‚©")]
+    [Tooltip("ç”Ÿæˆã—ãŸã‚¢ã‚¤ãƒ†ãƒ ã‚’ã“ã®ã‚ªãƒ–ã‚¸ã‚§ã‚¯ãƒˆã®å­ã«ã™ã‚‹ã‹")]
     public bool parentItemsToBelt = false;
 
     [Header("Belt Area")]
-    [Tooltip("ƒRƒ“ƒxƒA[‚Æ‚µ‚Ä”»’è‚·‚éƒŒƒCƒ„[i‚±‚ÌƒŒƒCƒ„[‚Ì Collider2D ‚Ìã‚¾‚¯“®‚­j")]
+    [Tooltip("ã‚³ãƒ³ãƒ™ã‚¢ãƒ¼ã¨ã—ã¦åˆ¤å®šã™ã‚‹ãƒ¬ã‚¤ãƒ¤ãƒ¼ï¼ˆã“ã®ãƒ¬ã‚¤ãƒ¤ãƒ¼ã® Collider2D ã®ä¸Šã ã‘å‹•ãï¼‰")]
     public LayerMask conveyorLayerMask;
+
+    [HideInInspector]
+    public Vector2 mainInDirectionWorld = Vector2.up;   // ã“ã®ãƒ™ãƒ«ãƒˆã«å…¥ã£ã¦ãã‚‹å‘ãï¼ˆä¸­å¿ƒã«å‘ã‹ã†ç§»å‹•æ–¹å‘ï¼‰
+
+    [HideInInspector]
+    public Vector2 mainOutDirectionWorld = Vector2.up;  // ã“ã®ãƒ™ãƒ«ãƒˆã‹ã‚‰å‡ºã¦ã„ãå‘ã
+
+    [HideInInspector]
+    public bool isCornerBelt = false;                   // å…¥å£ã¨å‡ºå£ãŒ90åº¦ã«æ›²ãŒã£ã¦ã„ã‚‹ãƒ™ãƒ«ãƒˆã‹ã©ã†ã‹
 
     Collider2D _col;
 
@@ -35,32 +43,28 @@ public class ConveyorBelt : MonoBehaviour
     {
         _col = GetComponent<Collider2D>();
 
-        // š ‰ñ“]‚É‡‚í‚¹‚Ä©“®“I‚É moveDirection ‚ğİ’è
-        // iƒvƒŒƒnƒu‚ğ‰ñ“]‚³‚¹‚Ä‚¨‚¯‚ÎA‚»‚ÌŒü‚«‚ªuis•ûŒüv‚É‚È‚éj
-        moveDirection = (Vector2)transform.up;
+        if (moveDirection == Vector2.zero)
+            moveDirection = transform.up;
 
-        // ƒfƒtƒHƒ‹ƒg‚Å©•ª‚ÌƒŒƒCƒ„[‚ğƒRƒ“ƒxƒA[ƒŒƒCƒ„[‚Æ‚İ‚È‚·i‹ó‚È‚çj
         if (conveyorLayerMask.value == 0)
-        {
             conveyorLayerMask = 1 << gameObject.layer;
-        }
     }
 
     void Reset()
     {
-        moveDirection = Vector2.right;
+        moveDirection = Vector2.up;
         moveSpeed = 2f;
         conveyorLayerMask = 1 << gameObject.layer;
     }
 
     /// <summary>
-    /// ƒhƒŠƒ‹‚â‘¼‚Ì‹@ŠB‚©‚çuƒAƒCƒeƒ€‚ğó‚¯æ‚év‚½‚ß‚ÌAPI
+    /// ãƒ‰ãƒªãƒ«ãªã©ã‹ã‚‰ã‚¢ã‚¤ãƒ†ãƒ ã‚’å—ã‘å–ã‚‹ã€‚
     /// </summary>
     public void AddItem(GameObject itemPrefab)
     {
         if (itemPrefab == null)
         {
-            Debug.LogWarning("[ConveyorBelt] AddItem: itemPrefab ‚ª null ‚Å‚·B", this);
+            Debug.LogWarning("[ConveyorBelt] AddItem: itemPrefab ãŒ null", this);
             return;
         }
 
@@ -71,9 +75,8 @@ public class ConveyorBelt : MonoBehaviour
         var item = Instantiate(itemPrefab, spawnPos, Quaternion.identity);
 
         if (parentItemsToBelt)
-            item.transform.SetParent(transform, worldPositionStays: true);
+            item.transform.SetParent(transform, true);
 
-        // ˆÚ“®§Œä—pƒRƒ“ƒ|[ƒlƒ“ƒg‚ğ•t—^
         var mover = item.GetComponent<ItemOnBeltMover>();
         if (mover == null)
             mover = item.AddComponent<ItemOnBeltMover>();
@@ -83,54 +86,81 @@ public class ConveyorBelt : MonoBehaviour
 }
 
 /// <summary>
-/// uƒRƒ“ƒxƒA[‚Ìã‚É‚¢‚éŠÔ‚¾‚¯vƒAƒCƒeƒ€‚ğ“®‚©‚·§ŒäƒNƒ‰ƒXB
-/// Rigidbody2D ‚ª‚ ‚ê‚Î velocityA–³‚¯‚ê‚Î Transform ‚ÅˆÚ“®‚·‚éB
+/// ã€Œå¸¸ã«è¶³å…ƒã®ã‚³ãƒ³ãƒ™ã‚¢ãƒ¼ã‚’èª¿ã¹ã¦ã€ãã®ã‚³ãƒ³ãƒ™ã‚¢ãƒ¼ã®å‘ãã«åˆã‚ã›ã¦å‹•ãã€
+/// ã‚¢ã‚¤ãƒ†ãƒ å´ã®ç§»å‹•åˆ¶å¾¡ã€‚
+/// ãƒ™ãƒ«ãƒˆãŒå¤‰ã‚ã£ãŸç¬é–“ã«ã€ãã®ãƒ™ãƒ«ãƒˆã®ä¸­å¿ƒã«ä¸€åº¦ã‚¹ãƒŠãƒƒãƒ—ã—ã¦ã‹ã‚‰é€²è¡Œæ–¹å‘ã‚’åˆ‡ã‚Šæ›¿ãˆã‚‹ã®ã§ã€
+/// æ›²ãŒã‚Šè§’ã®çœŸã‚“ä¸­ã§æ–¹å‘è»¢æ›ã—ã¦ã„ã‚‹ã‚ˆã†ã«è¦‹ãˆã¾ã™ã€‚
 /// </summary>
 public class ItemOnBeltMover : MonoBehaviour
 {
-    ConveyorBelt _belt;
+    ConveyorBelt _currentBelt;
+    LayerMask _beltMask;
     Rigidbody2D _rb;
-    LayerMask _conveyorMask;
 
-    public void Init(ConveyorBelt belt)
+    // è¶³å…ƒã®ãƒ™ãƒ«ãƒˆæ¤œå‡ºç”¨åŠå¾„ï¼ˆãƒ™ãƒ«ãƒˆã®ã‚³ãƒ©ã‚¤ãƒ€ãƒ¼ã«ååˆ†ã‹ã‹ã‚‹ãã‚‰ã„ï¼‰
+    const float BeltDetectRadius = 0.08f;
+
+    public void Init(ConveyorBelt firstBelt)
     {
-        _belt = belt;
-        _conveyorMask = (_belt != null) ? _belt.conveyorLayerMask : ~0;
+        _currentBelt = firstBelt;
+        _beltMask = (firstBelt != null) ? firstBelt.conveyorLayerMask : ~0;
 
         _rb = GetComponent<Rigidbody2D>();
         if (_rb != null)
         {
-            // d—Í‚Å—‚¿‚Ä‚Ù‚µ‚­‚È‚¢‚È‚ç 0 ‚É‚·‚é
             _rb.gravityScale = 0f;
         }
     }
 
     void Update()
     {
-        if (_belt == null)
-        {
-            if (_rb != null) _rb.linearVelocity = Vector2.zero;
-            enabled = false;
-            return;
-        }
+        // â‘  è¶³å…ƒã®ãƒ™ãƒ«ãƒˆã‚’æ¤œå‡ºã—ã¦ _currentBelt ã‚’æ›´æ–°
+        UpdateCurrentBelt();
 
-        bool onBelt = IsOnBelt();
-        if (!onBelt)
+        if (_currentBelt == null)
         {
-            // ƒRƒ“ƒxƒA[‚Ìã‚É‚¢‚È‚¢ ¨ ’â~
+            // ãƒ™ãƒ«ãƒˆã®ä¸Šã«ã„ãªã„ â†’ åœæ­¢
             if (_rb != null) _rb.linearVelocity = Vector2.zero;
             return;
         }
 
-        // ƒxƒ‹ƒg‚ÌŒ»İ‚ÌŒü‚«‚Æ‘¬“x‚ğ–ˆƒtƒŒ[ƒ€QÆ
-        Vector2 dir = (_belt.moveDirection.sqrMagnitude > 0.0001f)
-            ? _belt.moveDirection.normalized
-            : (Vector2)_belt.transform.up;
+        // â‘¡ ç¾åœ¨ã®ãƒ™ãƒ«ãƒˆã®æƒ…å ±ã‹ã‚‰é€²è¡Œæ–¹å‘ã‚’æ±ºã‚ã‚‹
+        Vector2 dir;
 
-        float speed = (_belt.moveSpeed > 0f)
-            ? _belt.moveSpeed
-            : 2f;
+        if (_currentBelt.isCornerBelt)
+        {
+            // ã‚³ãƒ¼ãƒŠãƒ¼ãƒ™ãƒ«ãƒˆï¼šä¸­å¿ƒã‚’ã¯ã•ã‚“ã§å…¥å£æ–¹å‘â†’å‡ºå£æ–¹å‘ã«åˆ‡ã‚Šæ›¿ãˆã‚‹
+            Vector2 center = _currentBelt.transform.position;
 
+            Vector2 inMove = _currentBelt.mainInDirectionWorld;
+            Vector2 outMove = _currentBelt.mainOutDirectionWorld;
+
+            if (inMove.sqrMagnitude < 0.0001f)
+                inMove = -outMove; // å¿µã®ãŸã‚
+
+            inMove.Normalize();
+            outMove.Normalize();
+
+            Vector2 toPos = (Vector2)transform.position - center;
+            float dotIn = Vector2.Dot(toPos, inMove);
+
+            // ä¸­å¿ƒã‚ˆã‚Šã€Œå…¥å£å´ã€ã«ã„ã‚‹é–“ã¯ inMoveã€
+            // ä¸­å¿ƒã‚’è¶ŠãˆãŸã‚‰ outMove ã«åˆ‡ã‚Šæ›¿ãˆã‚‹
+            dir = (dotIn < 0f) ? inMove : outMove;
+        }
+        else
+        {
+            // ç›´ç·šãƒ™ãƒ«ãƒˆãªã©ï¼šå˜ç´”ã«å‡ºå£æ–¹å‘
+            dir = _currentBelt.mainOutDirectionWorld;
+            if (dir.sqrMagnitude < 0.0001f)
+                dir = _currentBelt.moveDirection;
+        }
+
+        if (dir.sqrMagnitude < 0.0001f)
+            dir = _currentBelt.transform.up;
+        dir.Normalize();
+
+        float speed = (_currentBelt.moveSpeed > 0f) ? _currentBelt.moveSpeed : 2f;
         Vector2 vel = dir * speed;
 
         if (_rb != null)
@@ -144,12 +174,60 @@ public class ItemOnBeltMover : MonoBehaviour
     }
 
     /// <summary>
-    /// ©•ª‚Ì‘«Œ³‚ÉuƒRƒ“ƒxƒA[ƒŒƒCƒ„[‚Ì Collider2Dv‚ª‚ ‚é‚©”»’è
+    /// è¶³å…ƒè¿‘ãã®ã‚³ãƒ³ãƒ™ã‚¢ãƒ¼ã‚’èª¿ã¹ã¦ _currentBelt ã‚’æ›´æ–°ã™ã‚‹ã€‚
+    /// ã€Œã¾ã ä»Šã®ãƒ™ãƒ«ãƒˆä¸Šã«ã„ã‚‹ãªã‚‰çµ¶å¯¾ã«ä¹—ã‚Šæ›ãˆãªã„ã€ãƒ«ãƒ¼ãƒ«ã€‚
+    /// ä»Šã®ãƒ™ãƒ«ãƒˆã‹ã‚‰å®Œå…¨ã«é›¢ã‚ŒãŸã‚ã¨ã«ã€è¿‘ãã®åˆ¥ãƒ™ãƒ«ãƒˆãŒã‚ã‚Œã°ä¹—ã‚Šæ›ãˆã‚‹ã€‚
     /// </summary>
-    bool IsOnBelt()
+    void UpdateCurrentBelt()
     {
-        Vector2 pos2D = transform.position;
-        var hit = Physics2D.OverlapPoint(pos2D, _conveyorMask);
-        return (hit != null);
+        Vector2 pos = transform.position;
+
+        Collider2D[] hits = Physics2D.OverlapCircleAll(pos, BeltDetectRadius, _beltMask);
+        ConveyorBelt nearest = null;
+        float nearestSqr = float.MaxValue;
+        bool onCurrent = false;
+
+        if (hits != null)
+        {
+            foreach (var h in hits)
+            {
+                if (!h) continue;
+                var b = h.GetComponentInParent<ConveyorBelt>();
+                if (b == null) continue;
+
+                if (b == _currentBelt)
+                {
+                    // â˜… ã¾ã ç¾åœ¨ã®ãƒ™ãƒ«ãƒˆã®ã‚³ãƒ©ã‚¤ãƒ€ãƒ¼ä¸Šã«ã„ã‚‹ â†’ çµ¶å¯¾ã«ä¹—ã‚Šæ›ãˆãªã„
+                    onCurrent = true;
+                }
+
+                // ä¸€å¿œã€å¾Œã§ä½¿ã†ãŸã‚ã«ä¸€ç•ªè¿‘ã„ãƒ™ãƒ«ãƒˆã‚‚è¨˜éŒ²
+                float d2 = ((Vector2)b.transform.position - pos).sqrMagnitude;
+                if (d2 < nearestSqr)
+                {
+                    nearestSqr = d2;
+                    nearest = b;
+                }
+            }
+        }
+
+        if (onCurrent)
+        {
+            // ã¾ã ä»Šã®ãƒ™ãƒ«ãƒˆã®ä¸Š â†’ ä½•ã‚‚ã—ãªã„
+            return;
+        }
+
+        // ã“ã“ã«æ¥ãŸæ™‚ç‚¹ã§ã€Œä»Šã®ãƒ™ãƒ«ãƒˆã®ã‚³ãƒ©ã‚¤ãƒ€ãƒ¼ã‹ã‚‰å®Œå…¨ã«å‡ºã¦ã„ã‚‹ã€
+
+        if (nearest != null)
+        {
+            // åˆ¥ã®ãƒ™ãƒ«ãƒˆãŒè¿‘ãã«ã‚ã‚‹ â†’ ãã®ãƒ™ãƒ«ãƒˆã«ä¹—ã‚Šæ›ãˆ
+            _currentBelt = nearest;
+        }
+        else
+        {
+            // è¶³å…ƒã«ãƒ™ãƒ«ãƒˆãŒãªã„ â†’ å®Œå…¨ã«ãƒ™ãƒ«ãƒˆã‹ã‚‰é™ã‚ŠãŸ
+            _currentBelt = null;
+        }
     }
 }

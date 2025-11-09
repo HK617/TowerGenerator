@@ -62,6 +62,16 @@ public class BuildPlacement : MonoBehaviour
     // Base が実際に「完成」したかどうか（ドローンで建て終わった時点で true）
     public static bool s_baseBuilt = false;
 
+    [Header("=== Machine auto connect ===")]
+    [Tooltip("Machine レイヤー（コンベアー / ドリルなど）が乗っているレイヤー")]
+    public LayerMask machineLayerMask;
+
+    [Tooltip("上下左右にどれだけ離れた位置を隣マスとみなすか（Fine グリッドなら 0.25）")]
+    public float machineCellOffset = 0.25f;
+
+    [Tooltip("隣マスチェック用の半径（小さい円でピンポイントに拾う）")]
+    public float machineProbeRadius = 0.12f;
+
     [Header("=== Rotation ===")]
     [Tooltip("Rキーを押したときに回転する角度（度）")]
     public float rotationStepDeg = 90f;
@@ -257,6 +267,79 @@ public class BuildPlacement : MonoBehaviour
 #endif
     }
 
+    /// <summary>
+    /// Machine レイヤーのブロックが置かれた/完成したとき、
+    /// そのブロックの「前方」と「真後ろ」にある Machine ブロックへ
+    /// 接続再計算を依頼する。
+    /// （互いの「前方同士」が常に最新になるイメージ）
+    /// </summary>
+    void NotifyMachineNeighbors(GameObject centerGo)
+    {
+        if (centerGo == null) return;
+
+        // Machine レイヤーが未設定なら "Machine" を探す
+        if (machineLayerMask.value == 0)
+        {
+            int idx = LayerMask.NameToLayer("Machine");
+            if (idx >= 0)
+                machineLayerMask = 1 << idx;
+        }
+
+        Vector2 center = centerGo.transform.position;
+
+        // centerGo の「前方」を transform.up として扱う
+        Vector2 forward = centerGo.transform.up;
+
+        // それをワールドの Up/Right/Down/Left のどれに一番近いかで丸める
+        Vector2[] worldDirs = { Vector2.up, Vector2.right, Vector2.down, Vector2.left };
+        Vector2 bestDir = Vector2.up;
+        float bestDot = -1f;
+        foreach (var d in worldDirs)
+        {
+            float dot = Vector2.Dot(forward.normalized, d);
+            if (dot > bestDot)
+            {
+                bestDot = dot;
+                bestDir = d;
+            }
+        }
+
+        // 「前方」と「真後ろ」の2方向だけチェック
+        Vector2[] checkDirs = { bestDir, -bestDir };
+
+        foreach (var dir in checkDirs)
+        {
+            Vector2 checkPos = center + dir * machineCellOffset;
+            Collider2D[] hits = Physics2D.OverlapCircleAll(checkPos, machineProbeRadius, machineLayerMask);
+            if (hits == null || hits.Length == 0) continue;
+
+            foreach (var h in hits)
+            {
+                if (!h) continue;
+                var root = h.GetComponentInParent<Transform>();
+                if (root == null) continue;
+
+                // コンベアーなら接続再計算
+                var belt = root.GetComponent<ConveyorBelt>();
+                if (belt != null)
+                {
+                    var connector = root.GetComponent<ConveyorBeltAutoConnector>();
+                    if (connector != null)
+                    {
+                        connector.RecalculatePattern(false); // ここでは波及OFF
+                    }
+                }
+
+                // ドリル側で何か更新したければここに追加（今は特に無し）
+                var drill = root.GetComponent<DrillBehaviour>();
+                if (drill != null)
+                {
+                    // 例えば将来、前方ベルト有無で見た目を変えるなど
+                }
+            }
+        }
+    }
+
     void AutoUpdateUseFineGridByZoom()
     {
         float ortho = -1f;
@@ -390,11 +473,13 @@ public class BuildPlacement : MonoBehaviour
         }
         else
         {
-            // ここでは _currentRotationDeg は使わず、ゴースト無し建築はデフォルト向きにしておく
             var go = Instantiate(def.prefab, pos, Quaternion.identity, prefabParent);
             _placedByCell[cell] = go;
             placedGo = go;
         }
+
+        // ★ここで Machine 周囲更新を呼ぶ
+        NotifyMachineNeighbors(placedGo);
 
         if (flowField != null)
             RegisterBuildingToFlowField(def, pos, true);
@@ -550,6 +635,9 @@ public class BuildPlacement : MonoBehaviour
                 tmp.Add(kv.Key);
         foreach (var k in tmp)
             _placedFine[k] = ghost;
+
+        // ★ここで Machine 周囲更新を呼ぶ
+        NotifyMachineNeighbors(ghost);
 
         if (flowField != null && def != null)
             RegisterBuildingToFlowField(def, pos, true);
