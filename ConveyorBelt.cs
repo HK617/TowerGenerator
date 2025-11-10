@@ -77,11 +77,16 @@ public class ConveyorBelt : MonoBehaviour
         if (parentItemsToBelt)
             item.transform.SetParent(transform, true);
 
+        // ベルト移動制御
         var mover = item.GetComponent<ItemOnBeltMover>();
         if (mover == null)
             mover = item.AddComponent<ItemOnBeltMover>();
-
         mover.Init(this);
+
+        // 分岐検知（分割ベルトの上に来たら 3 方向に流す）
+        var splitterWatcher = item.GetComponent<BeltItemSplitterWatcher>();
+        if (splitterWatcher == null)
+            splitterWatcher = item.AddComponent<BeltItemSplitterWatcher>();
     }
 }
 
@@ -157,7 +162,16 @@ public class ItemOnBeltMover : MonoBehaviour
         }
 
         if (dir.sqrMagnitude < 0.0001f)
+        {
+            // Distributorなど「moveDirection=0」のベルトは静止させる
+            if (_currentBelt.moveDirection == Vector2.zero)
+            {
+                if (_rb != null) _rb.linearVelocity = Vector2.zero;
+                return;
+            }
+
             dir = _currentBelt.transform.up;
+        }
         dir.Normalize();
 
         float speed = (_currentBelt.moveSpeed > 0f) ? _currentBelt.moveSpeed : 2f;
