@@ -8,9 +8,12 @@ EnemyHpBar.cs
 
 TurretShooter2D.cs
 
-
 Plojectile.cs
 
-PlayerController
+PlayerController.cs
 
-ZoomSpriteSwicher
+ZoomSpriteSwicher.cs
+
+CameraScrollZoom.cs
+
+PathPreviewRunner.cs
