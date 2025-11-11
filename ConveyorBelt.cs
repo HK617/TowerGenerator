@@ -160,18 +160,6 @@ public class ItemOnBeltMover : MonoBehaviour
             if (dir.sqrMagnitude < 0.0001f)
                 dir = _currentBelt.moveDirection;
         }
-
-        if (dir.sqrMagnitude < 0.0001f)
-        {
-            // Distributorなど「moveDirection=0」のベルトは静止させる
-            if (_currentBelt.moveDirection == Vector2.zero)
-            {
-                if (_rb != null) _rb.linearVelocity = Vector2.zero;
-                return;
-            }
-
-            dir = _currentBelt.transform.up;
-        }
         dir.Normalize();
 
         float speed = (_currentBelt.moveSpeed > 0f) ? _currentBelt.moveSpeed : 2f;

@@ -92,8 +92,16 @@ public class ConveyorDistributor : MonoBehaviour
     {
         if (mover == null || targetBelt == null) yield break;
 
-        bool prevEnabled = mover.enabled;
-        mover.enabled = false;
+        // まずは既存の速度を止めておく
+        var rb = mover.GetComponent<Rigidbody2D>();
+        if (rb != null)
+        {
+#if UNITY_6000_0_OR_NEWER
+        rb.linearVelocity = Vector2.zero;
+#else
+            rb.velocity = Vector2.zero;
+#endif
+        }
 
         Vector3 startPos = mover.transform.position;
         Vector3 mid = transform.position;
@@ -116,10 +124,27 @@ public class ConveyorDistributor : MonoBehaviour
             yield return null;
         }
 
-        // 新しいベルトに乗り換え
+        // ★ ここで新しいベルトとして初期化
         mover.Init(targetBelt);
-        mover.enabled = prevEnabled;
+
+        // ★ すぐにベルト方向の速度を与えておく
+        if (rb != null)
+        {
+            Vector2 dir = targetBelt.mainOutDirectionWorld;
+            if (dir.sqrMagnitude < 0.0001f)
+                dir = targetBelt.moveDirection;
+            if (dir.sqrMagnitude < 0.0001f)
+                dir = targetBelt.transform.up;
+
+            dir.Normalize();
+#if UNITY_6000_0_OR_NEWER
+        rb.linearVelocity = dir * targetBelt.moveSpeed;
+#else
+            rb.velocity = dir * targetBelt.moveSpeed;
+#endif
+        }
     }
+
 
     /// <summary>
     /// 周囲の上下左右にある ConveyorBelt のうち、
