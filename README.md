@@ -1,6 +1,8 @@
 # TowerGenerator
 This is a personal development project
 
+総ファイル数：32
+
 ChatGPTにアップされていないプログラム
 
 EnemyHpBar.cs
