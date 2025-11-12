@@ -101,9 +101,23 @@ public class ItemOnBeltMover : MonoBehaviour
     ConveyorBelt _currentBelt;
     LayerMask _beltMask;
     Rigidbody2D _rb;
+    Collider2D _col;
 
-    // 足元のベルト検出用半径（ベルトのコライダーに十分かかるくらい）
+    [Header("Anti-collision")]
+    [Tooltip("前のアイテムから最低これだけ離れて停止（見た目サイズに合わせる）")]
+    public float minGap = 0.18f;
+
+    [Tooltip("キャスト時の安全マージン")]
+    public float safety = 0.02f;
+
+    [Tooltip("アイテム検出レイヤー（未設定なら自動で Item）")]
+    public LayerMask itemMask = 0;
+
+    // ベルト検出
     const float BeltDetectRadius = 0.08f;
+
+    // Cast 用のワーク領域（GC回避）
+    readonly RaycastHit2D[] _castHits = new RaycastHit2D[8];
 
     public void Init(ConveyorBelt firstBelt)
     {
@@ -111,83 +125,180 @@ public class ItemOnBeltMover : MonoBehaviour
         _beltMask = (firstBelt != null) ? firstBelt.conveyorLayerMask : ~0;
 
         _rb = GetComponent<Rigidbody2D>();
-        if (_rb != null)
+        if (_rb == null) _rb = gameObject.AddComponent<Rigidbody2D>();
+
+        _rb.gravityScale = 0f;
+        _rb.interpolation = RigidbodyInterpolation2D.Interpolate;
+        _rb.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
+
+        _col = GetComponent<Collider2D>();
+        if (_col == null)
         {
-            _rb.gravityScale = 0f;
+            var c = gameObject.AddComponent<CircleCollider2D>();
+            c.isTrigger = true; // 物理押し出しを使わない
+            c.radius = Mathf.Max(minGap * 0.5f, 0.10f);
+            _col = c;
         }
+        else
+        {
+            _col.isTrigger = true;
+        }
+
+        if (itemMask.value == 0)
+        {
+            int idx = LayerMask.NameToLayer("Item");
+            if (idx >= 0) itemMask = 1 << idx;
+        }
+
+        // 初期重なりを解消（スポーンや合流直後のめり込み対策）
+        ResolveInitialOverlap();
     }
 
-    void Update()
+    void FixedUpdate()
     {
-        // ① 足元のベルトを検出して _currentBelt を更新
         UpdateCurrentBelt();
 
         if (_currentBelt == null)
         {
-            // ベルトの上にいない → 停止
-            if (_rb != null) _rb.linearVelocity = Vector2.zero;
+#if UNITY_6000_0_OR_NEWER
+            _rb.linearVelocity = Vector2.zero;
+#else
+            _rb.velocity = Vector2.zero;
+#endif
             return;
         }
 
-        // ② 現在のベルトの情報から進行方向を決める
-        Vector2 dir;
+        Vector2 dir = GetMoveDirection();
+        if (dir.sqrMagnitude < 1e-6f)
+        {
+#if UNITY_6000_0_OR_NEWER
+            _rb.linearVelocity = Vector2.zero;
+#else
+            _rb.velocity = Vector2.zero;
+#endif
+            return;
+        }
 
+        float speed = (_currentBelt.moveSpeed > 0f) ? _currentBelt.moveSpeed : 2f;
+
+        // 1ステップで進む予定距離
+        float step = speed * Time.fixedDeltaTime;
+
+        // ★ 前方スイープ：進行予定距離 + minGap をキャストして、最短ヒットまでで停止
+        float allowed = step;
+        float castDist = step + minGap;
+
+        int hitCount = CastAhead(dir, castDist, _castHits);
+        if (hitCount > 0)
+        {
+            float nearest = float.MaxValue;
+            for (int i = 0; i < hitCount; i++)
+            {
+                var h = _castHits[i];
+                if (!h.collider) continue;
+
+                // 自分自身は無視
+                if (_col != null && h.collider == _col) continue;
+
+                // 同じベルト上のアイテムを優先的にブロック扱い
+                var other = h.collider.GetComponentInParent<ItemOnBeltMover>();
+                if (other != null)
+                {
+                    // 同一ベルト or 不明 → ブロック
+                    if (other._currentBelt == _currentBelt || other._currentBelt == null)
+                    {
+                        nearest = Mathf.Min(nearest, h.distance);
+                    }
+                }
+                else
+                {
+                    // アイテム以外（万一）にも近づきすぎない
+                    nearest = Mathf.Min(nearest, h.distance);
+                }
+            }
+
+            if (nearest < float.MaxValue)
+            {
+                // nearest はキャスト開始点からの距離。minGap 分はクリアに必要なので引く
+                allowed = Mathf.Max(0f, nearest - safety);
+                if (allowed > step) allowed = step; // 念のためクランプ
+            }
+        }
+
+        if (allowed <= 1e-4f)
+        {
+            // 停止（見た目スムーズ用に速度を0）
+#if UNITY_6000_0_OR_NEWER
+            _rb.linearVelocity = Vector2.zero;
+#else
+            _rb.velocity = Vector2.zero;
+#endif
+            return;
+        }
+
+        Vector2 delta = dir * allowed;
+
+        // MovePositionで正確に移動（Interpolateで見た目なめらか）
+        _rb.MovePosition(_rb.position + delta);
+
+        // 速度は任意（UI等で使うなら設定）
+#if UNITY_6000_0_OR_NEWER
+        _rb.linearVelocity = dir * speed;
+#else
+        _rb.velocity = dir * speed;
+#endif
+    }
+
+    // 進行方向（カーブは“中心を跨いだら出口方向”）
+    Vector2 GetMoveDirection()
+    {
         if (_currentBelt.isCornerBelt)
         {
-            // コーナーベルト：中心をはさんで入口方向→出口方向に切り替える
             Vector2 center = _currentBelt.transform.position;
-
             Vector2 inMove = _currentBelt.mainInDirectionWorld;
             Vector2 outMove = _currentBelt.mainOutDirectionWorld;
-
-            if (inMove.sqrMagnitude < 0.0001f)
-                inMove = -outMove; // 念のため
-
-            inMove.Normalize();
-            outMove.Normalize();
+            if (inMove.sqrMagnitude < 1e-6f) inMove = -outMove;
+            inMove.Normalize(); outMove.Normalize();
 
             Vector2 toPos = (Vector2)transform.position - center;
             float dotIn = Vector2.Dot(toPos, inMove);
-
-            // 中心より「入口側」にいる間は inMove、
-            // 中心を越えたら outMove に切り替える
-            dir = (dotIn < 0f) ? inMove : outMove;
+            return (dotIn < 0f) ? inMove : outMove;
         }
         else
         {
-            // 直線ベルトなど：単純に出口方向
-            dir = _currentBelt.mainOutDirectionWorld;
-            if (dir.sqrMagnitude < 0.0001f)
-                dir = _currentBelt.moveDirection;
-        }
-        dir.Normalize();
-
-        float speed = (_currentBelt.moveSpeed > 0f) ? _currentBelt.moveSpeed : 2f;
-        Vector2 vel = dir * speed;
-
-        if (_rb != null)
-        {
-            _rb.linearVelocity = vel;
-        }
-        else
-        {
-            transform.position += (Vector3)(vel * Time.deltaTime);
+            Vector2 dir = _currentBelt.mainOutDirectionWorld;
+            if (dir.sqrMagnitude < 1e-6f) dir = _currentBelt.moveDirection;
+            return dir.normalized;
         }
     }
 
-    /// <summary>
-    /// 足元近くのコンベアーを調べて _currentBelt を更新する。
-    /// 「まだ今のベルト上にいるなら絶対に乗り換えない」ルール。
-    /// 今のベルトから完全に離れたあとに、近くの別ベルトがあれば乗り換える。
-    /// </summary>
+    // Collider/Rigidbody Cast（Trigger 同士でも可視）
+    int CastAhead(Vector2 dir, float distance, RaycastHit2D[] results)
+    {
+        // Collider2D.Cast の方が形状を正しく使える
+        if (_col != null)
+        {
+            var filter = new ContactFilter2D
+            {
+                useLayerMask = true,
+                layerMask = itemMask,
+                useTriggers = true
+            };
+            return _col.Cast(dir.normalized, filter, results, distance);
+        }
+
+        // 予備（Colliderが無い場合）
+        return Physics2D.RaycastNonAlloc(_rb.position, dir.normalized, results, distance, itemMask);
+    }
+
     void UpdateCurrentBelt()
     {
         Vector2 pos = transform.position;
-
         Collider2D[] hits = Physics2D.OverlapCircleAll(pos, BeltDetectRadius, _beltMask);
+
+        bool onCurrent = false;
         ConveyorBelt nearest = null;
         float nearestSqr = float.MaxValue;
-        bool onCurrent = false;
 
         if (hits != null)
         {
@@ -195,15 +306,10 @@ public class ItemOnBeltMover : MonoBehaviour
             {
                 if (!h) continue;
                 var b = h.GetComponentInParent<ConveyorBelt>();
-                if (b == null) continue;
+                if (!b) continue;
 
-                if (b == _currentBelt)
-                {
-                    // ★ まだ現在のベルトのコライダー上にいる → 絶対に乗り換えない
-                    onCurrent = true;
-                }
+                if (b == _currentBelt) onCurrent = true;
 
-                // 一応、後で使うために一番近いベルトも記録
                 float d2 = ((Vector2)b.transform.position - pos).sqrMagnitude;
                 if (d2 < nearestSqr)
                 {
@@ -213,23 +319,38 @@ public class ItemOnBeltMover : MonoBehaviour
             }
         }
 
-        if (onCurrent)
-        {
-            // まだ今のベルトの上 → 何もしない
-            return;
-        }
+        if (!onCurrent) _currentBelt = nearest;
+    }
 
-        // ここに来た時点で「今のベルトのコライダーから完全に出ている」
+    // スポーンや合流で既に重なっていたら、進行方向の反対へわずかに退避
+    void ResolveInitialOverlap()
+    {
+        if (_col == null) return;
 
-        if (nearest != null)
+        var filter = new ContactFilter2D
         {
-            // 別のベルトが近くにある → そのベルトに乗り換え
-            _currentBelt = nearest;
-        }
-        else
+            useLayerMask = true,
+            layerMask = itemMask,
+            useTriggers = true
+        };
+
+        Collider2D[] cols = new Collider2D[8];
+        int count = _col.Overlap(filter, cols);
+        if (count <= 0) return;
+
+        // 現在の進行方向がわからなければ軽くランダム退避
+        Vector2 dir = GetMoveDirection();
+        if (dir.sqrMagnitude < 1e-6f)
+            dir = Random.insideUnitCircle.normalized;
+
+        const int maxIters = 6;
+        float step = Mathf.Max(minGap * 0.5f, 0.10f);
+
+        for (int i = 0; i < maxIters; i++)
         {
-            // 足元にベルトがない → 完全にベルトから降りた
-            _currentBelt = null;
+            int c = _col.Overlap(filter, cols);
+            if (c <= 0) break;
+            _rb.position -= dir * (step * 0.5f); // 少し後退
         }
     }
 }
