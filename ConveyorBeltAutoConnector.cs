@@ -5,11 +5,15 @@
 /// 隣接する ConveyorBelt / DrillBehaviour を検出し、
 /// 13種類のスプライトパターンと moveDirection を自動設定する。
 /// 
-/// 修正版:
-/// - 隣接探索はワールドの上下左右固定（斜め誤検出防止）
-/// - ワールド方向→ローカルU/R/D/L の変換を Dot 計算で行い、
-///   コンベアーの角度に正しく追従する。
-/// - 13個のスプライト構成はそのまま維持。
+/// 変更点:
+/// - 隣接探索はワールドの上下左右のみ（斜め誤ヒット防止）
+/// - HasNeighborWorld で「ベルトの向き」がその方向とほぼ平行な場合だけ接続とみなす
+///   → 平行に並べただけのベルト同士は接続しない
+/// - in/out 判定:
+///   ・out は基本1方向のみ
+///   ・接続が1方向しかない場合は「その1方向を in、out はローカル上方向」にする
+///     → Din_Rout / Din_Lout で横を壊しても下→上の直線としてつながりを維持
+/// - autoRefresh で一定間隔ごとに再計算
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(ConveyorBelt))]
@@ -44,8 +48,16 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
     [Header("Fallback Sprite")]
     public Sprite defaultSprite;
 
+    [Header("Auto Refresh")]
+    [Tooltip("true のとき、一定時間ごとに周囲を再チェックして見た目を更新します")]
+    public bool autoRefresh = true;
+
+    [Tooltip("自動再計算の間隔（秒）")]
+    public float refreshInterval = 0.3f;
+
     ConveyorBelt _belt;
     SpriteRenderer _sr;
+    float _timer;
 
     void Awake()
     {
@@ -55,13 +67,25 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
 
     void Start()
     {
-        // 起動時に1回だけ自分を更新
         RecalculatePattern(false);
+        _timer = Random.Range(0f, refreshInterval);
+    }
+
+    void Update()
+    {
+        if (!autoRefresh) return;
+
+        _timer += Time.deltaTime;
+        if (_timer >= refreshInterval)
+        {
+            _timer = 0f;
+            RecalculatePattern(false);
+        }
     }
 
     /// <summary>
     /// 周囲を調べて接続パターンを更新。
-    /// propagateToNeighbors = true にすると、近隣ベルトにも再計算を伝播する。
+    /// propagateToNeighbors = true にすると近隣ベルトにも再計算を伝播する。
     /// </summary>
     public void RecalculatePattern(bool propagateToNeighbors)
     {
@@ -69,17 +93,13 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
 
         Vector3 pos = transform.position;
 
-        // 1) ワールド座標の上下左右で隣接チェック
+        // 1) ワールド座標の上下左右で隣接チェック（向きも見る）
         bool hasWorldUp = HasNeighborWorld(pos, Vector2.up);
         bool hasWorldRight = HasNeighborWorld(pos, Vector2.right);
         bool hasWorldDown = HasNeighborWorld(pos, Vector2.down);
         bool hasWorldLeft = HasNeighborWorld(pos, Vector2.left);
 
         // 2) ワールド方向を「このコンベアーのローカル U/R/D/L」に変換
-        bool inU = false, inR = false, inD = false, inL = false;
-        bool outU = false, outR = false, outD = false, outL = false;
-
-        // ローカル方向フラグ
         bool localUpHas = false;
         bool localRightHas = false;
         bool localDownHas = false;
@@ -90,67 +110,125 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         if (hasWorldDown) MarkLocalSide(Vector2.down, ref localUpHas, ref localRightHas, ref localDownHas, ref localLeftHas);
         if (hasWorldLeft) MarkLocalSide(Vector2.left, ref localUpHas, ref localRightHas, ref localDownHas, ref localLeftHas);
 
-        // 3) ローカル接続を in/out に分類
-        if (localDownHas)
-        {
-            inD = true;
+        // 3) in / out を決める
+        bool inU = false, inR = false, inD = false, inL = false;
+        bool outU = false, outR = false, outD = false, outL = false;
 
-            if (localUpHas) outU = true;
-            if (localRightHas) outR = true;
-            if (localLeftHas) outL = true;
-        }
-        else if (localUpHas)
+        int connectedCount =
+            (localUpHas ? 1 : 0) +
+            (localRightHas ? 1 : 0) +
+            (localDownHas ? 1 : 0) +
+            (localLeftHas ? 1 : 0);
+
+        if (connectedCount == 0)
         {
+            // どこともつながっていない → とりあえずローカル上向きに流すだけ
             outU = true;
+        }
+        else if (connectedCount == 1)
+        {
+            // 接続1方向だけ:
+            // その1方向を in とみなし、out は必ずローカル上(=transform.up)にする
+            if (localUpHas) inU = true;
             if (localRightHas) inR = true;
+            if (localDownHas) inD = true;
             if (localLeftHas) inL = true;
+
+            outU = true;
         }
         else
         {
-            if (localRightHas) outR = true;
-            if (localLeftHas && !localRightHas) outL = true;
+            // 接続2方向以上:
+            // out は「前向き（transform.up）」に一番近い方向を選ぶ
+            Vector2 forward = transform.up.normalized;
+            float bestDot = -999f;
+
+            // Up
+            if (localUpHas)
+            {
+                float dot = Vector2.Dot(LocalToWorldDir(Vector2.up).normalized, forward);
+                if (dot > bestDot)
+                {
+                    bestDot = dot;
+                    outU = true; outR = outD = outL = false;
+                }
+            }
+            // Right
+            if (localRightHas)
+            {
+                float dot = Vector2.Dot(LocalToWorldDir(Vector2.right).normalized, forward);
+                if (dot > bestDot)
+                {
+                    bestDot = dot;
+                    outR = true; outU = outD = outL = false;
+                }
+            }
+            // Down
+            if (localDownHas)
+            {
+                float dot = Vector2.Dot(LocalToWorldDir(Vector2.down).normalized, forward);
+                if (dot > bestDot)
+                {
+                    bestDot = dot;
+                    outD = true; outU = outR = outL = false;
+                }
+            }
+            // Left
+            if (localLeftHas)
+            {
+                float dot = Vector2.Dot(LocalToWorldDir(Vector2.left).normalized, forward);
+                if (dot > bestDot)
+                {
+                    bestDot = dot;
+                    outL = true; outU = outR = outD = false;
+                }
+            }
+
+            // out 以外でつながっている方向は全部 in
+            if (localUpHas && !outU) inU = true;
+            if (localRightHas && !outR) inR = true;
+            if (localDownHas && !outD) inD = true;
+            if (localLeftHas && !outL) inL = true;
         }
 
-        // 4) 13パターンに応じてスプライト選択
+        // 4) スプライトを決定
         Sprite chosen = GetPatternSprite(inU, inR, inD, inL, outU, outR, outD, outL);
         _sr.sprite = chosen ?? defaultSprite;
 
-        // 5) ローカルでの「中心に向かう入口方向」と「出口方向」を決める
-        //    （inX は「どの辺から入ってくるか」なので、移動方向はその逆になる）
+        // 5) ローカルでの入口/出口ベクトルを決定
         Vector2 localInMove = Vector2.zero;
-        if (inD) localInMove = Vector2.up;    // 下辺から → 上向きに中心へ
-        else if (inU) localInMove = Vector2.down;  // 上辺から → 下向きに中心へ
-        else if (inR) localInMove = Vector2.left;  // 右辺から → 左向きに中心へ
-        else if (inL) localInMove = Vector2.right; // 左辺から → 右向きに中心へ
+        Vector2 localOutMove = Vector2.up; // デフォルト
 
-        Vector2 localOutMove = Vector2.up;         // デフォルトは上向き
+        if (inD) localInMove = Vector2.up;
+        else if (inU) localInMove = Vector2.down;
+        else if (inR) localInMove = Vector2.left;
+        else if (inL) localInMove = Vector2.right;
+
         if (outU) localOutMove = Vector2.up;
         else if (outD) localOutMove = Vector2.down;
         else if (outR) localOutMove = Vector2.right;
         else if (outL) localOutMove = Vector2.left;
 
-        // ローカル → ワールドに変換
+        // ローカル → ワールド
         Vector2 worldInMove = LocalToWorldDir(localInMove);
         Vector2 worldOutMove = LocalToWorldDir(localOutMove);
 
-        // コンベアーに保存しておく
         _belt.mainInDirectionWorld = worldInMove.normalized;
         _belt.mainOutDirectionWorld = worldOutMove.normalized;
 
-        // 入口と出口が90度なら「コーナー」とみなす（直線は false）
+        // コーナー判定（入口と出口が90度ならコーナー）
         bool hasIn = localInMove != Vector2.zero;
         bool hasOut = localOutMove != Vector2.zero;
         bool isCorner = false;
         if (hasIn && hasOut)
         {
             float dot = Vector2.Dot(localInMove.normalized, localOutMove.normalized);
-            // ほぼ直線(1 or -1)ではなく、90度近い場合だけコーナー扱い
             if (Mathf.Abs(dot) < 0.1f)
                 isCorner = true;
         }
         _belt.isCornerBelt = isCorner;
 
-        // 6) moveDirection は「出口方向」で決める
+        // moveDirection は出口方向
         _belt.moveDirection = worldOutMove.normalized;
 
         // 6) 近隣ベルトにも伝播（必要なら）
@@ -162,6 +240,8 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
 
     /// <summary>
     /// ワールド方向 dirWorld で隣にコンベアーorドリルがあるか？
+    /// ベルトの場合は「そのベルトの向き」が dirWorld とほぼ平行なときだけ接続とみなす。
+    /// （平行に並べただけのベルトは無視）
     /// </summary>
     bool HasNeighborWorld(Vector3 basePos, Vector2 dirWorld)
     {
@@ -169,13 +249,27 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         var hits = Physics2D.OverlapCircleAll(center, probeRadius, searchMask);
         if (hits == null || hits.Length == 0) return false;
 
+        Vector2 dir = dirWorld.normalized;
+
         foreach (var h in hits)
         {
             if (!h) continue;
-            if (h.GetComponentInParent<ConveyorBelt>() != null && h.GetComponentInParent<ConveyorBelt>() != _belt)
-                return true;
+
+            // ドリルは向き関係なく常に接続扱い
             if (h.GetComponentInParent<DrillBehaviour>() != null)
                 return true;
+
+            var belt = h.GetComponentInParent<ConveyorBelt>();
+            if (belt != null && belt != _belt)
+            {
+                Vector2 otherUp = belt.transform.up;
+                otherUp.Normalize();
+                float dot = Mathf.Abs(Vector2.Dot(otherUp, dir));
+
+                // 45度以内ぐらいを「平行」とみなす（cos 45° ≒ 0.707）
+                if (dot >= 0.7f)
+                    return true;
+            }
         }
         return false;
     }
@@ -245,6 +339,8 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
     Sprite GetPatternSprite(bool inU, bool inR, bool inD, bool inL,
                             bool outU, bool outR, bool outD, bool outL)
     {
+        // out が複数立つケースは基本無い想定
+
         if (inR && outU && !inL && !inU && !inD) return sprite_Rin_Uout;
         if (inL && outU && !inR && !inU && !inD) return sprite_Lin_Uout;
         if (inL && inR && outU && !inU && !inD) return sprite_LRin_Uout;
@@ -254,10 +350,13 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         if (inL && inD && outU) return sprite_LDin_Uout;
         if (inD && outR) return sprite_Din_Rout;
         if (inD && outL) return sprite_Din_Lout;
+
+        // 以下は out が複数立つ想定のパターン（通常は使用されない）
         if (inD && outL && outR) return sprite_Din_LRout;
         if (inD && outL && outR && outU) return sprite_Din_LRUout;
         if (inD && outU && outR) return sprite_Din_URout;
         if (inD && outU && outL) return sprite_Din_ULout;
+
         return defaultSprite;
     }
 
@@ -266,10 +365,10 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
     {
         Gizmos.color = Color.cyan;
         Vector2 c = transform.position;
-        Gizmos.DrawWireSphere(c + Vector2.up * cellSize, probeRadius);
+        Gizmos.DrawWireSphere(c + Vector2.up    * cellSize, probeRadius);
         Gizmos.DrawWireSphere(c + Vector2.right * cellSize, probeRadius);
-        Gizmos.DrawWireSphere(c + Vector2.down * cellSize, probeRadius);
-        Gizmos.DrawWireSphere(c + Vector2.left * cellSize, probeRadius);
+        Gizmos.DrawWireSphere(c + Vector2.down  * cellSize, probeRadius);
+        Gizmos.DrawWireSphere(c + Vector2.left  * cellSize, probeRadius);
     }
 #endif
 }
