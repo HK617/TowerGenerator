@@ -1,7 +1,6 @@
 ﻿using UnityEngine;
 
 /// <summary>
-/// 単純なコンベアーベルト:
 /// ・AddItem でアイテムを受け取り、ItemOnBeltMover にベルト情報を渡す
 /// ・moveDirection は「このベルト上でのアイテムの進行方向」（ワールド座標）
 ///   ConveyorBeltAutoConnector から上書きされます。
@@ -95,6 +94,12 @@ public class ConveyorBelt : MonoBehaviour
 /// アイテム側の移動制御。
 /// ベルトが変わった瞬間に、そのベルトの中心に一度スナップしてから進行方向を切り替えるので、
 /// 曲がり角の真ん中で方向転換しているように見えます。
+/// 
+/// ★ 変更点
+/// ・前方のアイテムの“進行方向”は無視し、Cast にヒットした ItemOnBeltMover は全て障害物扱い
+/// ・同じベルトでなくても、Item レイヤーのコライダーがあれば停止対象
+/// ・カーブベルトでは、入口方向→出口方向へ Vector2.Slerp で徐々に曲げる
+///   （そのカーブ方向で前方チェックも行う）
 /// </summary>
 public class ItemOnBeltMover : MonoBehaviour
 {
@@ -113,8 +118,16 @@ public class ItemOnBeltMover : MonoBehaviour
     [Tooltip("アイテム検出レイヤー（未設定なら自動で Item）")]
     public LayerMask itemMask = 0;
 
+    [Header("Corner Turn")]
+    [Tooltip("カーブベルト上で 1秒間に何度まで回転するか（大きいほど急カーブ）")]
+    public float cornerTurnSpeedDegPerSec = 360f;
+
     // 足元のベルト検出用
     const float BeltDetectRadius = 0.08f;
+
+    // 現在の向き（度）。Init でベルト方向から初期化する
+    float _currentAngleDeg;
+    bool _hasCurrentAngle = false;
 
     // 前方キャストで使うワーク配列
     readonly RaycastHit2D[] _castHits = new RaycastHit2D[16];
@@ -153,8 +166,31 @@ public class ItemOnBeltMover : MonoBehaviour
             if (idx >= 0) itemMask = 1 << idx;
         }
 
+        // 今のベルトの向きから初期角度を決める
+        InitCurrentAngleFromBelt(firstBelt);
+
         // スポーン直後に重なっていた場合、少しだけ後ろへずらす
         ResolveInitialOverlap();
+    }
+
+    void InitCurrentAngleFromBelt(ConveyorBelt belt)
+    {
+        if (belt == null)
+        {
+            _currentAngleDeg = 0f;
+            _hasCurrentAngle = true;
+            return;
+        }
+
+        Vector2 dir = belt.mainOutDirectionWorld;
+        if (dir.sqrMagnitude < 1e-6f)
+            dir = belt.moveDirection;
+        if (dir.sqrMagnitude < 1e-6f)
+            dir = belt.transform.up;
+
+        dir.Normalize();
+        _currentAngleDeg = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg;
+        _hasCurrentAngle = true;
     }
 
     void FixedUpdate()
@@ -211,26 +247,7 @@ public class ItemOnBeltMover : MonoBehaviour
                 if (other == null || other == this)
                     continue;
 
-                // ★ 同じベルト上のアイテムは、方向に関係なくブロック扱い
-                if (other._currentBelt != null && _currentBelt != null &&
-                    other._currentBelt == _currentBelt)
-                {
-                    float dSameBelt = h.distance;
-                    if (dSameBelt < nearest)
-                        nearest = dSameBelt;
-                    continue; // 方向チェックはスキップ
-                }
-
-                // ↑以外（別ベルトなど）は「ほぼ同じ方向に動いているときだけ」ブロック
-                Vector2 otherDir = other.GetMoveDirection();
-                if (otherDir.sqrMagnitude > 0f)
-                {
-                    otherDir.Normalize();
-                    float dot = Vector2.Dot(moveDir, otherDir);
-                    if (dot < 0.2f)
-                        continue;
-                }
-
+                // 方向は無視：前方にアイテムがいるならすべてブロック
                 float d = h.distance;
                 if (d < nearest)
                     nearest = d;
@@ -261,32 +278,39 @@ public class ItemOnBeltMover : MonoBehaviour
     {
         if (_currentBelt == null) return Vector2.zero;
 
+        // 今のベルトが「最終的に向かってほしい方向」
+        Vector2 targetDir = _currentBelt.mainOutDirectionWorld;
+        if (targetDir.sqrMagnitude < 1e-6f)
+            targetDir = _currentBelt.moveDirection;
+        if (targetDir.sqrMagnitude < 1e-6f)
+            targetDir = _currentBelt.transform.up;
+
+        targetDir.Normalize();
+        float targetAngle = Mathf.Atan2(targetDir.y, targetDir.x) * Mathf.Rad2Deg;
+
+        // 初回だけ、現在角度が未設定ならターゲット角度に合わせる
+        if (!_hasCurrentAngle)
+        {
+            _currentAngleDeg = targetAngle;
+            _hasCurrentAngle = true;
+        }
+
         if (_currentBelt.isCornerBelt)
         {
-            Vector2 center = _currentBelt.transform.position;
-            Vector2 inMove = _currentBelt.mainInDirectionWorld;
-            Vector2 outMove = _currentBelt.mainOutDirectionWorld;
-
-            if (outMove.sqrMagnitude < 1e-6f)
-                outMove = _currentBelt.moveDirection;
-            if (inMove.sqrMagnitude < 1e-6f)
-                inMove = -outMove;
-
-            inMove.Normalize();
-            outMove.Normalize();
-
-            // ベルトの中心より「入口側」にいるうちは inMove、「出口側」に来たら outMove
-            Vector2 toPos = (Vector2)transform.position - center;
-            float dotIn = Vector2.Dot(toPos, inMove);
-            return (dotIn < 0f) ? inMove : outMove;
+            // ▼ コーナーベルト上にいる間は「一定速度で」目標角度へ近づける
+            float maxDelta = cornerTurnSpeedDegPerSec * Time.fixedDeltaTime;
+            _currentAngleDeg = Mathf.MoveTowardsAngle(_currentAngleDeg, targetAngle, maxDelta);
         }
         else
         {
-            Vector2 dir = _currentBelt.mainOutDirectionWorld;
-            if (dir.sqrMagnitude < 1e-6f)
-                dir = _currentBelt.moveDirection;
-            return dir.normalized;
+            // 通常ベルトでは即、ベルトの向きに合わせる
+            _currentAngleDeg = targetAngle;
         }
+
+        // 角度から方向ベクトルに戻す
+        float rad = _currentAngleDeg * Mathf.Deg2Rad;
+        Vector2 dir = new Vector2(Mathf.Cos(rad), Mathf.Sin(rad));
+        return dir.normalized;
     }
 
     // 自分のコライダーを進行方向に Cast して、前方のアイテムを拾う
@@ -307,6 +331,7 @@ public class ItemOnBeltMover : MonoBehaviour
         return Physics2D.RaycastNonAlloc(_rb.position, dir.normalized, _castHits, distance, itemMask);
     }
 
+    // 「今足元にあるベルト」を決める
     // 「今足元にあるベルト」を決める
     void UpdateCurrentBelt()
     {
@@ -332,14 +357,19 @@ public class ItemOnBeltMover : MonoBehaviour
                 if (d2 < nearestSqr)
                 {
                     nearestSqr = d2;
-                    nearest = b;
+                    nearest = b;   // 1番近いベルト（なければ null のまま）
                 }
             }
         }
 
-        // 足元のベルトが変わったときだけ差し替え
+        // ★足元のベルトが見つからなかったら nearest は null。
+        //   そのまま _currentBelt に代入して「ベルト無し」を反映する。
         if (!onCurrent)
+        {
             _currentBelt = nearest;
+            // ベルトを乗り換えたときでも _currentAngleDeg は維持するので、
+            // GetMoveDirection() 側で徐々に向きが変わる（cornerTurnSpeedDegPerSec）だけ。
+        }
     }
 
     // スポーン／合流直後で既に重なっている場合、進行方向の逆へ少しずつ退避
