@@ -19,3 +19,5 @@ ZoomSpriteSwicher.cs
 CameraScrollZoom.cs
 
 PathPreviewRunner.cs
+
+PreviewRaidInput.cs
