@@ -118,9 +118,9 @@ public class ItemOnBeltMover : MonoBehaviour
     [Tooltip("アイテム検出レイヤー（未設定なら自動で Item）")]
     public LayerMask itemMask = 0;
 
-    [Header("Corner Turn")]
-    [Tooltip("カーブベルト上で 1秒間に何度まで回転するか（大きいほど急カーブ）")]
-    public float cornerTurnSpeedDegPerSec = 360f;
+    [Header("Corner / Merge Turn")]
+    [Tooltip("ベルトの進行方向が変わるとき、1秒間に何度まで回転するか（カーブ・合流共通）")]
+    public float cornerTurnSpeedDegPerSec = 360; //計算式90×4×(movwSpeed/2)
 
     // 足元のベルト検出用
     const float BeltDetectRadius = 0.08f;
@@ -141,9 +141,13 @@ public class ItemOnBeltMover : MonoBehaviour
         _rb = GetComponent<Rigidbody2D>();
         if (_rb == null) _rb = gameObject.AddComponent<Rigidbody2D>();
 
+        // 物理は完全に自前制御
         _rb.gravityScale = 0f;
+        _rb.linearDamping = 0f;
+        _rb.angularDamping = 0f;
         _rb.interpolation = RigidbodyInterpolation2D.Interpolate;
         _rb.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
+        _rb.constraints = RigidbodyConstraints2D.FreezeRotation;
 
         _col = GetComponent<Collider2D>();
         if (_col == null)
@@ -210,7 +214,7 @@ public class ItemOnBeltMover : MonoBehaviour
             return;
         }
 
-        // このフレームの進行方向（カーブベルトにも対応）
+        // このフレームの進行方向（カーブ・合流どちらでもなめらかに曲げる）
         Vector2 moveDir = GetMoveDirection();
         if (moveDir.sqrMagnitude < 1e-6f)
         {
@@ -261,6 +265,9 @@ public class ItemOnBeltMover : MonoBehaviour
             }
         }
 
+        // ★ 合流ゲートによる制限（FIFO 弁）
+        allowed = ApplyMergeGate(moveDir, allowed, castDist);
+
         // === 実際に移動 ===
         Vector2 delta = moveDir * allowed;
         Vector2 newPos = _rb.position + delta;
@@ -273,7 +280,51 @@ public class ItemOnBeltMover : MonoBehaviour
         _rb.MovePosition(newPos);
     }
 
-    // カーブベルト対応の進行方向取得
+    /// <summary>
+    /// 前方に合流マスがあり、かつ自分の入口の番がまだ来ていないなら、
+    /// その手前で停止するように allowed 距離を制限する。
+    /// </summary>
+    float ApplyMergeGate(Vector2 moveDir, float currentAllowed, float castDist)
+    {
+        if (_rb == null || _beltMask == 0) return currentAllowed;
+
+        // 前方方向にベルトをレイキャスト
+        RaycastHit2D hit = Physics2D.Raycast(_rb.position, moveDir, castDist, _beltMask);
+        if (hit.collider == null) return currentAllowed;
+
+        var belt = hit.collider.GetComponentInParent<ConveyorBelt>();
+        if (belt == null) return currentAllowed;
+
+        var gate = belt.GetComponent<BeltMergeController>();
+        if (gate == null || !gate.enabled || !gate.HasMultipleInputs)
+            return currentAllowed;
+
+        // このアイテムから合流マス中心への方向
+        Vector2 dirToCenter = (Vector2)belt.transform.position - _rb.position;
+
+        // そもそもこの方向を入口として扱わないなら、弁の対象外
+        if (!gate.IsRelevantEntrance(dirToCenter))
+            return currentAllowed;
+
+        // 「自分は弁の前で待機中です」と登録
+        gate.RegisterWaiting(dirToCenter);
+
+        // 自分の順番（FIFO）ならそのまま進める
+        if (gate.IsEntranceOpen(dirToCenter))
+            return currentAllowed;
+
+        // まだ順番が来ていない → 合流マスの少し手前で停止
+        float stopDist = hit.distance - safety;
+        if (stopDist < 0f) stopDist = 0f;
+
+        if (stopDist < currentAllowed)
+            return stopDist;
+
+        return currentAllowed;
+    }
+
+    // ベルトの向きが変わるとき、常になめらかに回転させる
+    // → カーブでも合流でも同じ動きになる
     public Vector2 GetMoveDirection()
     {
         if (_currentBelt == null) return Vector2.zero;
@@ -295,17 +346,12 @@ public class ItemOnBeltMover : MonoBehaviour
             _hasCurrentAngle = true;
         }
 
-        if (_currentBelt.isCornerBelt)
-        {
-            // ▼ コーナーベルト上にいる間は「一定速度で」目標角度へ近づける
-            float maxDelta = cornerTurnSpeedDegPerSec * Time.fixedDeltaTime;
-            _currentAngleDeg = Mathf.MoveTowardsAngle(_currentAngleDeg, targetAngle, maxDelta);
-        }
-        else
-        {
-            // 通常ベルトでは即、ベルトの向きに合わせる
-            _currentAngleDeg = targetAngle;
-        }
+        // ●ポイント：
+        //   ・「コーナーベルトかどうか」に関係なく
+        //     常に cornerTurnSpeedDegPerSec の速度で targetAngle へ回転
+        //   → ベルト乗り換え（合流）のときも、カーブと同じ弧を描く
+        float maxDelta = cornerTurnSpeedDegPerSec * Time.fixedDeltaTime;
+        _currentAngleDeg = Mathf.MoveTowardsAngle(_currentAngleDeg, targetAngle, maxDelta);
 
         // 角度から方向ベクトルに戻す
         float rad = _currentAngleDeg * Mathf.Deg2Rad;
@@ -331,7 +377,6 @@ public class ItemOnBeltMover : MonoBehaviour
         return Physics2D.RaycastNonAlloc(_rb.position, dir.normalized, _castHits, distance, itemMask);
     }
 
-    // 「今足元にあるベルト」を決める
     // 「今足元にあるベルト」を決める
     void UpdateCurrentBelt()
     {
@@ -367,8 +412,8 @@ public class ItemOnBeltMover : MonoBehaviour
         if (!onCurrent)
         {
             _currentBelt = nearest;
-            // ベルトを乗り換えたときでも _currentAngleDeg は維持するので、
-            // GetMoveDirection() 側で徐々に向きが変わる（cornerTurnSpeedDegPerSec）だけ。
+            // 角度は維持したままなので、新しいベルトに乗り換えた瞬間も
+            // カーブと同じロジックで徐々に向きが変わる。
         }
     }
 
@@ -405,3 +450,4 @@ public class ItemOnBeltMover : MonoBehaviour
         }
     }
 }
+
