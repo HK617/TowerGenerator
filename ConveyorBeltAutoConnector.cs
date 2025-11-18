@@ -1,4 +1,5 @@
 ﻿using UnityEngine;
+using System.Collections.Generic;
 
 /// <summary>
 /// コンベアーの周囲を調べて、
@@ -445,6 +446,9 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         // moveDirection は出口方向
         _belt.moveDirection = worldOutMove.normalized;
 
+        // ★ 追加：出口方向にいるベルトを outputs に登録
+        UpdateOutputsFromMoveDirection(pos);
+
         // 6) 近隣ベルトにも伝播（必要なら）
         if (propagateToNeighbors)
         {
@@ -516,6 +520,43 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// このベルトの moveDirection 方向にある隣接ベルトを探して
+    /// ConveyorBelt.outputs に登録する。
+    /// （とりあえず「前方1マス」のみ。直線・カーブはこれでOK）
+    /// </summary>
+    void UpdateOutputsFromMoveDirection(Vector3 basePos)
+    {
+        if (_belt == null) return;
+
+        Vector2 dir = _belt.moveDirection;
+        if (dir.sqrMagnitude < 0.0001f) return;
+        dir.Normalize();
+
+        // 前方1マスの中心を調べる
+        Vector2 center = (Vector2)basePos + dir * cellSize;
+        var hits = Physics2D.OverlapCircleAll(center, probeRadius, searchMask);
+        if (hits == null || hits.Length == 0)
+        {
+            _belt.outputs = null;
+            return;
+        }
+
+        List<ConveyorBelt> list = new List<ConveyorBelt>();
+
+        foreach (var h in hits)
+        {
+            if (!h) continue;
+            var belt = h.GetComponentInParent<ConveyorBelt>();
+            if (belt != null && belt != _belt && !list.Contains(belt))
+            {
+                list.Add(belt);
+            }
+        }
+
+        _belt.outputs = list.Count > 0 ? list.ToArray() : null;
     }
 
     // -----------------------

@@ -2,10 +2,10 @@ using System.Collections;
 using UnityEngine;
 
 /// <summary>
-/// ドリルの挙動:
+/// ドリルの挙動（新ベルトロジック対応版）:
 /// ・足元に ResourceMarker があるときだけ稼働
 /// ・前方に ConveyorBelt が接続されているときだけ生産開始
-/// ・接続ベルトにアイテムがある間は生産しない（詰まり防止）
+/// ・接続ベルトの「入口スロット」に空きがない間は生産しない（詰まり防止）
 /// ・アイテムはドリル中心からスポーンし、コンベアブロック中心まで移動してからベルトに乗る
 /// ・ゴースト状態（Collider2D がまだ有効化されていない間）は完全に停止
 /// </summary>
@@ -45,6 +45,7 @@ public class DrillBehaviour : MonoBehaviour
 
     Collider2D[] _cols;
     bool _isPlaced;
+    bool _isProducing;
 
     void Awake()
     {
@@ -91,8 +92,12 @@ public class DrillBehaviour : MonoBehaviour
         ConveyorBelt frontBelt = FindFrontBelt(outPos);
         if (frontBelt == null) return;
 
-        // そのベルト上にすでにアイテムがあるなら「詰まっている」とみなして生産停止
-        if (IsBeltOccupied(frontBelt))
+        // ベルト入口スロットに空きが無いなら生産しない（詰まり防止）
+        if (!frontBelt.HasFreeInputSpace())
+            return;
+
+        // すでに生産コルーチンが走っていれば、次のサイクルまで待つ
+        if (_isProducing)
             return;
 
         _timer += Time.deltaTime;
@@ -168,45 +173,13 @@ public class DrillBehaviour : MonoBehaviour
     }
 
     // ─────────────────────────────
-    // 接続しているベルト上にアイテムが存在するか？
-    // ─────────────────────────────
-    bool IsBeltOccupied(ConveyorBelt belt)
-    {
-        if (belt == null) return false;
-
-        // チェック位置: ベルトの itemSpawnPoint があればそこ、なければベルト中心
-        Vector3 checkPos = belt.itemSpawnPoint != null
-            ? belt.itemSpawnPoint.position
-            : belt.transform.position;
-
-        // 半径は「ベルト長さの1マス分」くらいを想定して少し広めに
-        float r = Mathf.Max(beltSearchRadius, 0.15f);
-
-        var hits = Physics2D.OverlapCircleAll(checkPos, r);
-        if (hits == null || hits.Length == 0) return false;
-
-        foreach (var h in hits)
-        {
-            if (!h) continue;
-            // ItemOnBeltMover を持っているものを「ベルト上のアイテム」とみなす
-            var mover = h.GetComponentInParent<ItemOnBeltMover>();
-            if (mover != null)
-            {
-                // 「このベルトの上に乗っているアイテム」なら詰まり状態とみなす
-                // （_currentBelt は private なので、近くにいるだけでOKとする）
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    // ─────────────────────────────
     // ドリル中心からベルト中心へ動かしてからベルトに乗せる
     // ─────────────────────────────
     IEnumerator ProduceAndMoveToBelt(ConveyorBelt belt)
     {
         if (productPrefab == null || belt == null) yield break;
+
+        _isProducing = true;
 
         // 1) アイテムを「ドリルブロックの中心」にスポーン
         Vector3 start = transform.position;
@@ -217,6 +190,18 @@ public class DrillBehaviour : MonoBehaviour
             : belt.transform.position;
 
         GameObject item = Instantiate(productPrefab, start, Quaternion.identity);
+
+        // 物理挙動は使わないので Rigidbody / Collider は（あれば）無効化
+        var rb = item.GetComponent<Rigidbody2D>();
+        if (rb != null)
+        {
+            Destroy(rb);
+        }
+        var cols = item.GetComponentsInChildren<Collider2D>();
+        foreach (var c in cols)
+        {
+            c.enabled = false;
+        }
 
         // 3) ドリル中心 → ベルト中心 まで等速移動
         float dist = Vector3.Distance(start, targetPos);
@@ -239,16 +224,19 @@ public class DrillBehaviour : MonoBehaviour
             item.transform.position = targetPos;
         }
 
-        // 4) ここでベルトアイテムとして初期化
-        var mover = item.GetComponent<ItemOnBeltMover>();
-        if (mover == null)
-            mover = item.AddComponent<ItemOnBeltMover>();
-        mover.Init(belt);
+        // 4) ベルト入口スロットに空きが出るまで待機し、その後ロジックベルトに乗せる
+        while (!belt.HasFreeInputSpace())
+        {
+            yield return null;
+        }
 
-        // 5) 分配ベルト用の監視も付けておく
-        var splitterWatcher = item.GetComponent<BeltItemSplitterWatcher>();
-        if (splitterWatcher == null)
-            splitterWatcher = item.AddComponent<BeltItemSplitterWatcher>();
+        if (!belt.TryAcceptFromUpstream(item))
+        {
+            // 理論上ここにはほぼ来ないが、安全のため破棄
+            Destroy(item);
+        }
+
+        _isProducing = false;
     }
 
 #if UNITY_EDITOR

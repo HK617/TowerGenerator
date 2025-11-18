@@ -1,453 +1,459 @@
-﻿using UnityEngine;
+﻿using System.Collections.Generic;
+using UnityEngine;
 
 /// <summary>
-/// ・AddItem でアイテムを受け取り、ItemOnBeltMover にベルト情報を渡す
-/// ・moveDirection は「このベルト上でのアイテムの進行方向」（ワールド座標）
-///   ConveyorBeltAutoConnector から上書きされます。
+/// 完全ロジック制御のコンベアーベルト（中心円チェックなし）
+///
+/// ・Rigidbody / Collider の衝突には依存しない
+/// ・各アイテムは「ベルト上の距離 distance (0～beltLength)」で管理
+/// ・minItemSpacing 以上の間隔を必ず保つ（距離ベース）
+/// ・outputs に登録された次ベルトへラウンドロビンで押し出す
+/// ・isCornerBelt のときは 入口→ItemSpawnPoint→出口 を通る 2次 Bézier 曲線で曲げる
+/// ・アイテムの回転は変更しない（見た目の角度そのまま）
+/// ・アイテムごとに inDirection（どの方向から入ってきたか）を記録し、
+///   左から来たアイテムは「左→中心→上」、右から来たアイテムは「右→中心→上」のように曲がる
 /// </summary>
 [DisallowMultipleComponent]
 [RequireComponent(typeof(Collider2D))]
 public class ConveyorBelt : MonoBehaviour
 {
-    [Header("Move")]
-    [Tooltip("アイテムを流すワールド方向。Awake で transform.up が入ります。")]
+    [Header("Move Settings")]
+    [Tooltip("アイテムを流すワールド方向（出口方向）。通常は AutoConnector が設定。")]
     public Vector2 moveDirection = Vector2.up;
 
-    [Tooltip("アイテムの移動速度")]
-    public float moveSpeed = 2f;
+    [Tooltip("このベルトタイルの中心から見て、入口中心～出口中心までの距離。")]
+    public float beltLength = 0.25f;
 
-    [Header("Spawn")]
-    [Tooltip("アイテムを出す位置。未指定ならベルトの中心")]
+    [Tooltip("1秒間に何枚ぶん進むか（1 なら1秒で1枚）。")]
+    public float speedTilesPerSecond = 4f;
+
+    [Header("Spacing")]
+    [Tooltip("ベルト方向の距離で、アイテム同士がこれ未満には近づかない。")]
+    public float minItemSpacing = 0.20f;
+
+    [Header("Item Spawn / Visual")]
+    [Tooltip("ベルト中心（カーブの中心にも使う）。null の場合は transform.position。")]
     public Transform itemSpawnPoint;
 
-    [Tooltip("生成したアイテムをこのオブジェクトの子にするか")]
-    public bool parentItemsToBelt = false;
+    [Tooltip("生成したアイテムをこのベルトの子にするか。")]
+    public bool parentItemsToBelt = true;
 
-    [Header("Belt Area")]
-    [Tooltip("コンベアーとして判定するレイヤー（このレイヤーの Collider2D の上だけ動く）")]
-    public LayerMask conveyorLayerMask;
+    [Header("Connections")]
+    [Tooltip("このベルトから出ていく先のベルト。複数あればラウンドロビンで分配。")]
+    public ConveyorBelt[] outputs;
 
-    [HideInInspector]
-    public Vector2 mainInDirectionWorld = Vector2.up;   // このベルトに入ってくる向き（中心に向かう移動方向）
+    [Header("Debug / Neighbor Info (AutoConnector 用)")]
+    [Tooltip("AutoConnector が設定する、本線の入口方向（ワールド）。")]
+    public Vector2 mainInDirectionWorld;
+    [Tooltip("AutoConnector が設定する、本線の出口方向（ワールド）。通常は moveDirection と一致。")]
+    public Vector2 mainOutDirectionWorld;
+    [Tooltip("AutoConnector が設定するコーナーベルトフラグ。")]
+    public bool isCornerBelt;
 
-    [HideInInspector]
-    public Vector2 mainOutDirectionWorld = Vector2.up;  // このベルトから出ていく向き
+    // =====================================================================
+    // 内部データ
+    // =====================================================================
 
-    [HideInInspector]
-    public bool isCornerBelt = false;                   // 入口と出口が90度に曲がっているベルトかどうか
-
-    Collider2D _col;
-
-    void Awake()
+    class LaneItem
     {
-        _col = GetComponent<Collider2D>();
+        public GameObject go;
+        public float distance;      // 入口側からの距離（0 ～ beltLength）
+        public Vector2 inDirection; // このベルトに入ってきた方向
+    }
 
-        if (moveDirection == Vector2.zero)
-            moveDirection = transform.up;
+    readonly List<LaneItem> _items = new List<LaneItem>();
+    int _nextOutputIndex = 0;
 
-        if (conveyorLayerMask.value == 0)
-            conveyorLayerMask = 1 << gameObject.layer;
+    float WorldSpeed => Mathf.Max(0f, speedTilesPerSecond) * beltLength;
+
+    // =====================================================================
+    // ライフサイクル
+    // =====================================================================
+
+    void OnEnable()
+    {
+        FixDirections();
+        BeltLogicSystem.Register(this);
+    }
+
+    void OnDisable()
+    {
+        BeltLogicSystem.Unregister(this);
     }
 
     void Reset()
     {
         moveDirection = Vector2.up;
-        moveSpeed = 2f;
-        conveyorLayerMask = 1 << gameObject.layer;
+        mainOutDirectionWorld = moveDirection;
+        beltLength = 0.25f;
+        speedTilesPerSecond = 4f;
+        minItemSpacing = 0.20f;
+    }
+
+    void FixDirections()
+    {
+        if (moveDirection.sqrMagnitude < 0.0001f)
+            moveDirection = Vector2.up;
+        moveDirection.Normalize();
+
+        if (mainOutDirectionWorld.sqrMagnitude < 0.0001f)
+            mainOutDirectionWorld = moveDirection;
+
+        if (mainInDirectionWorld.sqrMagnitude < 0.0001f)
+            mainInDirectionWorld = -mainOutDirectionWorld;
+
+        // 入口と出口が90度近いときは「コーナー」とみなす保険
+        float dot = Vector2.Dot(mainInDirectionWorld.normalized, mainOutDirectionWorld.normalized);
+        if (Mathf.Abs(dot) < 0.1f)
+        {
+            isCornerBelt = true;
+        }
+    }
+
+    // =====================================================================
+    // 外部 API
+    // =====================================================================
+
+    /// <summary>
+    /// Prefab を生成してベルトに載せる（ドリルなどから使用）。
+    /// </summary>
+    public bool TryAddItemPrefab(GameObject itemPrefab)
+    {
+        if (itemPrefab == null) return false;
+        if (!HasFreeInputSpace()) return false;
+
+        Vector2 inDir = mainInDirectionWorld.sqrMagnitude > 0.0001f
+            ? mainInDirectionWorld.normalized
+            : (-moveDirection);
+
+        Vector3 spawnPos = itemSpawnPoint != null ? itemSpawnPoint.position : transform.position;
+        var go = Instantiate(itemPrefab, spawnPos, Quaternion.identity);
+        return InternalAccept(go, 0f, inDir);
     }
 
     /// <summary>
-    /// ドリルなどからアイテムを受け取る。
+    /// 他コンポーネントから既存 GameObject を受け取る従来 API。
     /// </summary>
-    public void AddItem(GameObject itemPrefab)
+    public bool TryAcceptFromUpstream(GameObject item)
     {
-        if (itemPrefab == null)
+        if (item == null) return false;
+        if (!HasFreeInputSpace()) return false;
+
+        Vector2 inDir = mainInDirectionWorld.sqrMagnitude > 0.0001f
+            ? mainInDirectionWorld.normalized
+            : (-moveDirection);
+
+        return InternalAccept(item, 0f, inDir);
+    }
+
+    /// <summary>
+    /// 上流ベルトが分かっている場合はこちら（合流時など）。
+    /// </summary>
+    public bool TryAcceptFromUpstream(GameObject item, ConveyorBelt fromBelt)
+    {
+        if (item == null) return false;
+        if (!HasFreeInputSpace()) return false;
+
+        Vector2 inDir;
+        if (fromBelt != null)
         {
-            Debug.LogWarning("[ConveyorBelt] AddItem: itemPrefab が null", this);
-            return;
+            Vector2 diff = (Vector2)(transform.position - fromBelt.transform.position);
+            inDir = (diff.sqrMagnitude < 0.0001f)
+                ? (mainInDirectionWorld.sqrMagnitude > 0.0001f
+                    ? mainInDirectionWorld.normalized
+                    : -moveDirection)
+                : diff.normalized;
+        }
+        else
+        {
+            inDir = mainInDirectionWorld.sqrMagnitude > 0.0001f
+                ? mainInDirectionWorld.normalized
+                : (-moveDirection);
         }
 
-        Vector3 spawnPos = itemSpawnPoint != null
-            ? itemSpawnPoint.position
-            : transform.position;
+        return InternalAccept(item, 0f, inDir);
+    }
 
-        var item = Instantiate(itemPrefab, spawnPos, Quaternion.identity);
+    /// <summary>
+    /// ベルト入口付近に新しいアイテムを置けるだけの距離的な空きがあるか。
+    /// </summary>
+    public bool HasFreeInputSpace()
+    {
+        if (_items.Count == 0) return true;
+
+        float nearest = float.MaxValue;
+        for (int i = 0; i < _items.Count; i++)
+        {
+            if (_items[i].distance < nearest)
+                nearest = _items[i].distance;
+        }
+
+        return nearest >= minItemSpacing;
+    }
+
+    /// <summary>
+    /// 先頭アイテムを取り出す（クラフター用など）。
+    /// </summary>
+    public bool TryExtractLast(out GameObject item)
+    {
+        item = null;
+        if (_items.Count == 0) return false;
+
+        int frontIndex = -1;
+        float max = float.MinValue;
+        for (int i = 0; i < _items.Count; i++)
+        {
+            if (_items[i].distance > max)
+            {
+                max = _items[i].distance;
+                frontIndex = i;
+            }
+        }
+
+        if (frontIndex < 0) return false;
+
+        var front = _items[frontIndex];
+        item = front.go;
+        _items.RemoveAt(frontIndex);
+
+        if (parentItemsToBelt && item != null && item.transform.parent == transform)
+            item.transform.SetParent(null, true);
+
+        return true;
+    }
+
+    // =====================================================================
+    // 内部ヘルパー
+    // =====================================================================
+
+    bool InternalAccept(GameObject item, float distance, Vector2 inDir)
+    {
+        // ベルトに乗ったら物理は殺す
+        var rb = item.GetComponent<Rigidbody2D>();
+        if (rb != null) Destroy(rb);
+        var cols = item.GetComponentsInChildren<Collider2D>();
+        foreach (var c in cols) c.enabled = false;
 
         if (parentItemsToBelt)
             item.transform.SetParent(transform, true);
 
-        // ベルト移動制御
-        var mover = item.GetComponent<ItemOnBeltMover>();
-        if (mover == null)
-            mover = item.AddComponent<ItemOnBeltMover>();
-        mover.Init(this);
-
-        // 分岐検知（分割ベルトの上に来たら 3 方向に流す）
-        var splitterWatcher = item.GetComponent<BeltItemSplitterWatcher>();
-        if (splitterWatcher == null)
-            splitterWatcher = item.AddComponent<BeltItemSplitterWatcher>();
-    }
-}
-
-/// <summary>
-/// 「常に足元のコンベアーを調べて、そのコンベアーの向きに合わせて動く」
-/// アイテム側の移動制御。
-/// ベルトが変わった瞬間に、そのベルトの中心に一度スナップしてから進行方向を切り替えるので、
-/// 曲がり角の真ん中で方向転換しているように見えます。
-/// 
-/// ★ 変更点
-/// ・前方のアイテムの“進行方向”は無視し、Cast にヒットした ItemOnBeltMover は全て障害物扱い
-/// ・同じベルトでなくても、Item レイヤーのコライダーがあれば停止対象
-/// ・カーブベルトでは、入口方向→出口方向へ Vector2.Slerp で徐々に曲げる
-///   （そのカーブ方向で前方チェックも行う）
-/// </summary>
-public class ItemOnBeltMover : MonoBehaviour
-{
-    ConveyorBelt _currentBelt;
-    LayerMask _beltMask;
-    Rigidbody2D _rb;
-    Collider2D _col;
-
-    [Header("Anti-collision")]
-    [Tooltip("前のアイテムから最低これだけ離れて停止（見た目サイズに合わせる）")]
-    public float minGap = 0.18f;
-
-    [Tooltip("キャスト時の安全マージン")]
-    public float safety = 0.02f;
-
-    [Tooltip("アイテム検出レイヤー（未設定なら自動で Item）")]
-    public LayerMask itemMask = 0;
-
-    [Header("Corner / Merge Turn")]
-    [Tooltip("ベルトの進行方向が変わるとき、1秒間に何度まで回転するか（カーブ・合流共通）")]
-    public float cornerTurnSpeedDegPerSec = 360; //計算式90×4×(movwSpeed/2)
-
-    // 足元のベルト検出用
-    const float BeltDetectRadius = 0.08f;
-
-    // 現在の向き（度）。Init でベルト方向から初期化する
-    float _currentAngleDeg;
-    bool _hasCurrentAngle = false;
-
-    // 前方キャストで使うワーク配列
-    readonly RaycastHit2D[] _castHits = new RaycastHit2D[16];
-
-    // ConveyorBelt.AddItem / ConveyorDistributor から最初に呼ばれる
-    public void Init(ConveyorBelt firstBelt)
-    {
-        _currentBelt = firstBelt;
-        _beltMask = (firstBelt != null) ? firstBelt.conveyorLayerMask : ~0;
-
-        _rb = GetComponent<Rigidbody2D>();
-        if (_rb == null) _rb = gameObject.AddComponent<Rigidbody2D>();
-
-        // 物理は完全に自前制御
-        _rb.gravityScale = 0f;
-        _rb.linearDamping = 0f;
-        _rb.angularDamping = 0f;
-        _rb.interpolation = RigidbodyInterpolation2D.Interpolate;
-        _rb.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
-        _rb.constraints = RigidbodyConstraints2D.FreezeRotation;
-
-        _col = GetComponent<Collider2D>();
-        if (_col == null)
+        LaneItem li = new LaneItem
         {
-            var c = gameObject.AddComponent<CircleCollider2D>();
-            c.isTrigger = true; // 物理押し出しは使わない
-            c.radius = Mathf.Max(minGap * 0.5f, 0.10f);
-            _col = c;
-        }
-        else
-        {
-            // アイテム同士は trigger にして自前ロジックで止める
-            _col.isTrigger = true;
-        }
+            go = item,
+            distance = Mathf.Clamp(distance, 0f, beltLength),
+            inDirection = inDir.sqrMagnitude > 0.0001f ? inDir.normalized : (-mainOutDirectionWorld.normalized)
+        };
+        _items.Add(li);
 
-        // itemMask が 0 のときは "Item" レイヤーを自動設定
-        if (itemMask.value == 0)
-        {
-            int idx = LayerMask.NameToLayer("Item");
-            if (idx >= 0) itemMask = 1 << idx;
-        }
-
-        // 今のベルトの向きから初期角度を決める
-        InitCurrentAngleFromBelt(firstBelt);
-
-        // スポーン直後に重なっていた場合、少しだけ後ろへずらす
-        ResolveInitialOverlap();
+        UpdateItemTransform(li);
+        return true;
     }
 
-    void InitCurrentAngleFromBelt(ConveyorBelt belt)
+    // =====================================================================
+    // ベルトロジック更新（BeltLogicSystem から呼ばれる）
+    // =====================================================================
+
+    public void TickLogic(float dt)
     {
-        if (belt == null)
+        FixDirections();
+        if (_items.Count == 0) return;
+
+        float speed = WorldSpeed;
+        if (speed <= 0f)
         {
-            _currentAngleDeg = 0f;
-            _hasCurrentAngle = true;
+            // 動かないベルト：見た目だけ整える
+            for (int i = 0; i < _items.Count; i++)
+                UpdateItemTransform(_items[i]);
             return;
         }
 
-        Vector2 dir = belt.mainOutDirectionWorld;
-        if (dir.sqrMagnitude < 1e-6f)
-            dir = belt.moveDirection;
-        if (dir.sqrMagnitude < 1e-6f)
-            dir = belt.transform.up;
+        // 先頭→後ろの順で distance の大きい順にソート
+        _items.Sort((a, b) => b.distance.CompareTo(a.distance));
 
-        dir.Normalize();
-        _currentAngleDeg = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg;
-        _hasCurrentAngle = true;
-    }
-
-    void FixedUpdate()
-    {
-        if (_rb == null) return;
-
-        // まず「今どのベルトの上か」を更新
-        UpdateCurrentBelt();
-
-        if (_currentBelt == null)
+        // 先頭から順に移動（前との距離を minItemSpacing 以上に保つ）
+        for (int i = 0; i < _items.Count; i++)
         {
-#if UNITY_6000_0_OR_NEWER
-            _rb.linearVelocity = Vector2.zero;
-#else
-            _rb.velocity = Vector2.zero;
-#endif
-            return;
-        }
+            LaneItem li = _items[i];
 
-        // このフレームの進行方向（カーブ・合流どちらでもなめらかに曲げる）
-        Vector2 moveDir = GetMoveDirection();
-        if (moveDir.sqrMagnitude < 1e-6f)
-        {
-#if UNITY_6000_0_OR_NEWER
-            _rb.linearVelocity = Vector2.zero;
-#else
-            _rb.velocity = Vector2.zero;
-#endif
-            return;
-        }
-        moveDir.Normalize();
+            float maxPos = beltLength;
 
-        float speed = (_currentBelt.moveSpeed > 0f) ? _currentBelt.moveSpeed : 2f;
-        float step = speed * Time.fixedDeltaTime;          // 予定移動距離
-        float castDist = step + minGap;                    // ちょっと先までキャスト
-        float allowed = step;                              // 実際に動ける距離
-
-        // === 前方に他アイテムがあるかチェック ===
-        int hitCount = CastAhead(moveDir, castDist);
-        if (hitCount > 0)
-        {
-            float nearest = float.MaxValue;
-
-            for (int i = 0; i < hitCount; i++)
+            if (i > 0)
             {
-                var h = _castHits[i];
-                if (h.collider == null) continue;
-
-                // 自分自身は無視
-                if (h.rigidbody != null && h.rigidbody == _rb)
-                    continue;
-
-                var other = h.collider.GetComponentInParent<ItemOnBeltMover>();
-                if (other == null || other == this)
-                    continue;
-
-                // 方向は無視：前方にアイテムがいるならすべてブロック
-                float d = h.distance;
-                if (d < nearest)
-                    nearest = d;
+                float frontPos = _items[i - 1].distance;
+                maxPos = Mathf.Min(maxPos, frontPos - minItemSpacing);
             }
 
-            if (nearest < float.MaxValue)
+            if (maxPos < 0f) maxPos = 0f;
+
+            float target = li.distance + speed * dt;
+            li.distance = Mathf.Clamp(target, 0f, maxPos);
+
+            // 誤差で minItemSpacing を割り込んだ場合の補正
+            if (i > 0)
             {
-                // 前のアイテムの safety 手前までしか動かない
-                allowed = Mathf.Max(0f, nearest - safety);
-                if (allowed > step) allowed = step;
-            }
-        }
-
-        // ★ 合流ゲートによる制限（FIFO 弁）
-        allowed = ApplyMergeGate(moveDir, allowed, castDist);
-
-        // === 実際に移動 ===
-        Vector2 delta = moveDir * allowed;
-        Vector2 newPos = _rb.position + delta;
-
-#if UNITY_6000_0_OR_NEWER
-        _rb.linearVelocity = delta / Time.fixedDeltaTime;
-#else
-        _rb.velocity = delta / Time.fixedDeltaTime;
-#endif
-        _rb.MovePosition(newPos);
-    }
-
-    /// <summary>
-    /// 前方に合流マスがあり、かつ自分の入口の番がまだ来ていないなら、
-    /// その手前で停止するように allowed 距離を制限する。
-    /// </summary>
-    float ApplyMergeGate(Vector2 moveDir, float currentAllowed, float castDist)
-    {
-        if (_rb == null || _beltMask == 0) return currentAllowed;
-
-        // 前方方向にベルトをレイキャスト
-        RaycastHit2D hit = Physics2D.Raycast(_rb.position, moveDir, castDist, _beltMask);
-        if (hit.collider == null) return currentAllowed;
-
-        var belt = hit.collider.GetComponentInParent<ConveyorBelt>();
-        if (belt == null) return currentAllowed;
-
-        var gate = belt.GetComponent<BeltMergeController>();
-        if (gate == null || !gate.enabled || !gate.HasMultipleInputs)
-            return currentAllowed;
-
-        // このアイテムから合流マス中心への方向
-        Vector2 dirToCenter = (Vector2)belt.transform.position - _rb.position;
-
-        // そもそもこの方向を入口として扱わないなら、弁の対象外
-        if (!gate.IsRelevantEntrance(dirToCenter))
-            return currentAllowed;
-
-        // 「自分は弁の前で待機中です」と登録
-        gate.RegisterWaiting(dirToCenter);
-
-        // 自分の順番（FIFO）ならそのまま進める
-        if (gate.IsEntranceOpen(dirToCenter))
-            return currentAllowed;
-
-        // まだ順番が来ていない → 合流マスの少し手前で停止
-        float stopDist = hit.distance - safety;
-        if (stopDist < 0f) stopDist = 0f;
-
-        if (stopDist < currentAllowed)
-            return stopDist;
-
-        return currentAllowed;
-    }
-
-    // ベルトの向きが変わるとき、常になめらかに回転させる
-    // → カーブでも合流でも同じ動きになる
-    public Vector2 GetMoveDirection()
-    {
-        if (_currentBelt == null) return Vector2.zero;
-
-        // 今のベルトが「最終的に向かってほしい方向」
-        Vector2 targetDir = _currentBelt.mainOutDirectionWorld;
-        if (targetDir.sqrMagnitude < 1e-6f)
-            targetDir = _currentBelt.moveDirection;
-        if (targetDir.sqrMagnitude < 1e-6f)
-            targetDir = _currentBelt.transform.up;
-
-        targetDir.Normalize();
-        float targetAngle = Mathf.Atan2(targetDir.y, targetDir.x) * Mathf.Rad2Deg;
-
-        // 初回だけ、現在角度が未設定ならターゲット角度に合わせる
-        if (!_hasCurrentAngle)
-        {
-            _currentAngleDeg = targetAngle;
-            _hasCurrentAngle = true;
-        }
-
-        // ●ポイント：
-        //   ・「コーナーベルトかどうか」に関係なく
-        //     常に cornerTurnSpeedDegPerSec の速度で targetAngle へ回転
-        //   → ベルト乗り換え（合流）のときも、カーブと同じ弧を描く
-        float maxDelta = cornerTurnSpeedDegPerSec * Time.fixedDeltaTime;
-        _currentAngleDeg = Mathf.MoveTowardsAngle(_currentAngleDeg, targetAngle, maxDelta);
-
-        // 角度から方向ベクトルに戻す
-        float rad = _currentAngleDeg * Mathf.Deg2Rad;
-        Vector2 dir = new Vector2(Mathf.Cos(rad), Mathf.Sin(rad));
-        return dir.normalized;
-    }
-
-    // 自分のコライダーを進行方向に Cast して、前方のアイテムを拾う
-    int CastAhead(Vector2 dir, float distance)
-    {
-        if (_col != null)
-        {
-            var filter = new ContactFilter2D
-            {
-                useLayerMask = true,
-                layerMask = itemMask,
-                useTriggers = true
-            };
-            return _col.Cast(dir.normalized, filter, _castHits, distance);
-        }
-
-        // コライダーが無い場合の保険
-        return Physics2D.RaycastNonAlloc(_rb.position, dir.normalized, _castHits, distance, itemMask);
-    }
-
-    // 「今足元にあるベルト」を決める
-    void UpdateCurrentBelt()
-    {
-        Vector2 pos = transform.position;
-        Collider2D[] hits = Physics2D.OverlapCircleAll(pos, BeltDetectRadius, _beltMask);
-
-        bool onCurrent = false;
-        ConveyorBelt nearest = null;
-        float nearestSqr = float.MaxValue;
-
-        if (hits != null)
-        {
-            foreach (var h in hits)
-            {
-                if (!h) continue;
-                var b = h.GetComponentInParent<ConveyorBelt>();
-                if (!b) continue;
-
-                if (b == _currentBelt)
-                    onCurrent = true;
-
-                float d2 = ((Vector2)b.transform.position - pos).sqrMagnitude;
-                if (d2 < nearestSqr)
+                float frontPos = _items[i - 1].distance;
+                if (frontPos - li.distance < minItemSpacing)
                 {
-                    nearestSqr = d2;
-                    nearest = b;   // 1番近いベルト（なければ null のまま）
+                    li.distance = frontPos - minItemSpacing;
+                    if (li.distance < 0f) li.distance = 0f;
                 }
             }
         }
 
-        // ★足元のベルトが見つからなかったら nearest は null。
-        //   そのまま _currentBelt に代入して「ベルト無し」を反映する。
-        if (!onCurrent)
+        // 先頭が端まで来ていたら、次のベルトへ押し出す
+        if (_items.Count > 0)
         {
-            _currentBelt = nearest;
-            // 角度は維持したままなので、新しいベルトに乗り換えた瞬間も
-            // カーブと同じロジックで徐々に向きが変わる。
+            LaneItem front = _items[0];
+            if (front.distance >= beltLength - 1e-4f)
+            {
+                if (TryPushToOutputs(front))
+                {
+                    _items.RemoveAt(0);
+                }
+                else
+                {
+                    // 下流が詰まっている場合、端で待機
+                    front.distance = beltLength - 1e-4f;
+                }
+            }
+        }
+
+        // 見た目更新
+        for (int i = 0; i < _items.Count; i++)
+            UpdateItemTransform(_items[i]);
+    }
+
+    bool TryPushToOutputs(LaneItem laneItem)
+    {
+        if (laneItem == null || laneItem.go == null) return false;
+        if (outputs == null || outputs.Length == 0) return false;
+
+        int count = outputs.Length;
+        int start = _nextOutputIndex;
+
+        for (int i = 0; i < count; i++)
+        {
+            int idx = (start + i) % count;
+            ConveyorBelt outBelt = outputs[idx];
+            if (outBelt == null) continue;
+
+            // 下流ベルトの入口方向 = 下流中心 - 自分の中心
+            Vector2 inDir = (Vector2)(outBelt.transform.position - transform.position);
+            if (inDir.sqrMagnitude < 0.0001f)
+                inDir = -outBelt.mainOutDirectionWorld.normalized;
+            else
+                inDir = inDir.normalized;
+
+            if (!outBelt.HasFreeInputSpace()) continue;
+
+            if (outBelt.InternalAccept(laneItem.go, 0f, inDir))
+            {
+                _nextOutputIndex = (idx + 1) % count;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // =====================================================================
+    // 見た目（パス上の位置計算）
+    // =====================================================================
+
+    void UpdateItemTransform(LaneItem li)
+    {
+        if (li == null || li.go == null) return;
+
+        Vector3 pos = GetPositionOnPath(li.distance, li.inDirection);
+        li.go.transform.position = pos;
+
+        // ★ 回転は一切いじらない（角度そのまま）
+    }
+
+    Vector3 GetPositionOnPath(float distance, Vector2 inDir)
+    {
+        float t = 0f;
+        if (beltLength > 1e-5f)
+            t = Mathf.Clamp01(distance / beltLength);
+
+        // このアイテム専用の入口方向
+        Vector2 dirIn = inDir.sqrMagnitude > 0.0001f
+            ? inDir.normalized
+            : mainInDirectionWorld.normalized;
+
+        Vector3 pIn = transform.position - (Vector3)(dirIn * (beltLength * 0.5f));
+
+        // 出口方向はベルト共通
+        Vector2 dirOut = mainOutDirectionWorld.sqrMagnitude > 0.0001f
+            ? mainOutDirectionWorld.normalized
+            : moveDirection.normalized;
+        Vector3 pOut = transform.position + (Vector3)(dirOut * (beltLength * 0.5f));
+
+        if (!isCornerBelt)
+        {
+            // 直線：入口→出口を線形補間
+            return Vector3.Lerp(pIn, pOut, t);
+        }
+        else
+        {
+            // コーナー：入口→中心→出口 を通る 2次 Bézier
+            Vector3 center = itemSpawnPoint != null ? itemSpawnPoint.position : transform.position;
+            return QuadraticBezier(pIn, center, pOut, t);
         }
     }
 
-    // スポーン／合流直後で既に重なっている場合、進行方向の逆へ少しずつ退避
-    void ResolveInitialOverlap()
+    static Vector3 QuadraticBezier(Vector3 p0, Vector3 p1, Vector3 p2, float t)
     {
-        if (_col == null) return;
-
-        var filter = new ContactFilter2D
-        {
-            useLayerMask = true,
-            layerMask = itemMask,
-            useTriggers = true
-        };
-
-        Collider2D[] cols = new Collider2D[16];
-        int count = _col.Overlap(filter, cols);
-        if (count <= 0) return;
-
-        Vector2 dir = GetMoveDirection();
-        if (dir.sqrMagnitude < 1e-6f)
-            dir = Random.insideUnitCircle.normalized;
-
-        float step = Mathf.Max(minGap * 0.5f, 0.10f);
-
-        const int maxIters = 8;
-        for (int i = 0; i < maxIters; i++)
-        {
-            int c = _col.Overlap(filter, cols);
-            if (c <= 0) break;
-
-            // 少しだけ後ろに下がる
-            _rb.position -= dir * (step * 0.5f);
-        }
+        float u = 1f - t;
+        return u * u * p0 + 2f * u * t * p1 + t * t * p2;
     }
 }
 
+/// <summary>
+/// シーン内のすべての ConveyorBelt をまとめて更新するマネージャ。
+/// </summary>
+public class BeltLogicSystem : MonoBehaviour
+{
+    static BeltLogicSystem _instance;
+    readonly List<ConveyorBelt> _belts = new List<ConveyorBelt>();
+
+    public static void Register(ConveyorBelt belt)
+    {
+        if (belt == null) return;
+        if (_instance == null)
+        {
+            var go = new GameObject("BeltLogicSystem");
+            _instance = go.AddComponent<BeltLogicSystem>();
+        }
+        if (!_instance._belts.Contains(belt))
+            _instance._belts.Add(belt);
+    }
+
+    public static void Unregister(ConveyorBelt belt)
+    {
+        if (_instance == null || belt == null) return;
+        _instance._belts.Remove(belt);
+    }
+
+    void Awake()
+    {
+        if (_instance != null && _instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+        _instance = this;
+        DontDestroyOnLoad(gameObject);
+    }
+
+    void Update()
+    {
+        float dt = Time.deltaTime;
+        for (int i = 0; i < _belts.Count; i++)
+        {
+            ConveyorBelt belt = _belts[i];
+            if (belt == null) continue;
+            belt.TickLogic(dt);
+        }
+    }
+}
