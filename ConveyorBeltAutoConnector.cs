@@ -1,12 +1,12 @@
-﻿using UnityEngine;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
+using UnityEngine;
 
 /// <summary>
 /// コンベアーの周囲を調べて、
 /// 隣接する ConveyorBelt / DrillBehaviour を検出し、
 /// 13種類のスプライトパターンと moveDirection を自動設定する。
 /// 
-/// NeighborInfo 方式 + 「本線」優先 + 「in 向きは1本だけ」ルール:
+/// NeighborInfo 方式 + 「本線」優先:
 /// - 1方向ごとに NeighborInfo を計算して、
 ///   ・平行な横並びなら接続しない（最初の横並び問題対策）
 ///   ・向きが90°違う場合:
@@ -14,14 +14,12 @@ using System.Collections.Generic;
 ///       - そうでなくても、自分に前後の本線があれば接続 (T字の枝)
 ///       - それ以外（本線なし＋outTowardMe false）は接続しない
 ///   ・それ以外（直列/普通のカーブなど）は接続
-/// - ドリルもコンベアーと同じルールで、transform.up を出力方向として扱う
-/// - 自分に out を向けている隣接コンベアーが複数ある場合は、
-///   InstanceID が最大（＝あとに生成されたとみなせる）ものだけを有効にし、
-///   それ以外は「存在しない」扱いにして、
-///   「自分に向かう out ラインは常に 1 本だけ」にする
+/// 
+/// ★ 出力方向について:
+///   - 「自分に in を向けている隣のベルト」は、すべて出力候補とみなして
+///     ConveyorBelt.outputs に全登録する
+///   - ConveyorBelt 側で outputs をラウンドロビンしてアイテムを分配する
 /// </summary>
-[DisallowMultipleComponent]
-[RequireComponent(typeof(ConveyorBelt))]
 [RequireComponent(typeof(SpriteRenderer))]
 public class ConveyorBeltAutoConnector : MonoBehaviour
 {
@@ -70,20 +68,23 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
     SpriteRenderer _sr;
     float _timer;
 
-    // 隣方向ごとの情報
     struct NeighborInfo
     {
         public bool exists;
+        public bool isBelt;
         public bool isDrill;
 
-        public bool isSideParallel;
-        public bool isOrthogonal;
-        public bool isParallelMain;
+        public bool isParallelMain; // 自分にとって前後方向にあるか？
 
-        public bool outTowardMe;   // 相手の out が自分に向いている (自分の in 候補)
-        public bool inTowardMe;    // 相手の in が自分に向いている (自分の out 候補)
+        public bool outTowardMe;   // 相手の out が自分に向いている (= 相手から自分への流れ)
+        public bool inTowardMe;    // 相手の in が自分に向いている (= 自分から相手への流れ)
 
-        public int instanceId;
+        public bool isSideParallel; // 横並びの平行かどうか
+        public bool isOrthogonal;   // 直交しているかどうか
+
+        public int instanceId;      // どっちが「新しい」かを比較するため
+
+        public ConveyorBelt beltRef; // 隣が ConveyorBelt のときの参照
     }
 
     void Awake()
@@ -121,14 +122,37 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         v.Normalize();
         float ax = Mathf.Abs(v.x);
         float ay = Mathf.Abs(v.y);
-
         if (ax > ay)
-            return (v.x > 0f) ? Vector2.right : Vector2.left;
+            return v.x >= 0 ? Vector2.right : Vector2.left;
         else
-            return (v.y > 0f) ? Vector2.up : Vector2.down;
+            return v.y >= 0 ? Vector2.up : Vector2.down;
     }
 
     Vector2 Opposite(Vector2 d) => -d;
+
+    /// <summary>世界方向をローカル U/R/D/L のどれに一番近いかで 0..3 (U,R,D,L) に変換</summary>
+    int WorldDirToLocalIndex(Vector2 worldDir)
+    {
+        worldDir.Normalize();
+        Vector2 u = transform.up.normalized;
+        Vector2 r = transform.right.normalized;
+        Vector2 d = -u;
+        Vector2 l = -r;
+
+        float du = Vector2.Dot(worldDir, u);
+        float dr = Vector2.Dot(worldDir, r);
+        float dd = Vector2.Dot(worldDir, d);
+        float dl = Vector2.Dot(worldDir, l);
+
+        float max = du;
+        int side = 0; // 0:U 1:R 2:D 3:L
+
+        if (dr > max) { max = dr; side = 1; }
+        if (dd > max) { max = dd; side = 2; }
+        if (dl > max) { max = dl; side = 3; }
+
+        return side;
+    }
 
     // -----------------------
     // NeighborInfo の取得
@@ -144,36 +168,43 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
 
         Vector2 center = (Vector2)basePos + dirWorld.normalized * cellSize;
         var hits = Physics2D.OverlapCircleAll(center, probeRadius, searchMask);
-        if (hits == null || hits.Length == 0) return info;   // exists=false のまま
+        if (hits == null || hits.Length == 0) return info; // exists=false のまま
 
-        Vector2 selfDir = QuantizeDir(transform.up);  // 自分の out 方向
-        Vector2 offsetDir = QuantizeDir(dirWorld);      // 自分→相手 方向（グリッド方向）
+        // 自分から見た向き
+        Vector2 selfDir = QuantizeDir(transform.up);
+        Vector2 offsetDir = QuantizeDir(dirWorld);
 
+        // 何か見つかるまでループ
         foreach (var h in hits)
         {
             if (!h) continue;
 
-            var drill = h.GetComponentInParent<DrillBehaviour>();
             var belt = h.GetComponentInParent<ConveyorBelt>();
+            var drill = h.GetComponentInParent<DrillBehaviour>();
 
-            if (drill == null && (belt == null || belt == _belt))
-                continue;
+            if (belt == null && drill == null) continue;
+            if (belt != null && belt == _belt) continue; // 自分自身は除外
 
             info.exists = true;
 
             GameObject rootGO;
             Vector2 otherDir;
-            if (drill != null)
+
+            if (belt != null)
             {
-                info.isDrill = true;
-                rootGO = drill.gameObject;
-                otherDir = QuantizeDir(drill.transform.up);   // ドリルの出力方向
+                info.isBelt = true;
+                info.isDrill = false;
+                rootGO = belt.gameObject;
+                otherDir = QuantizeDir(belt.transform.up);
+                info.beltRef = belt;
             }
             else
             {
-                info.isDrill = false;
-                rootGO = belt.gameObject;
-                otherDir = QuantizeDir(belt.transform.up);    // ベルトの出力方向
+                info.isDrill = true;
+                info.isBelt = false;
+                rootGO = drill.gameObject;
+                otherDir = QuantizeDir(drill.transform.up);
+                info.beltRef = null;
             }
 
             info.instanceId = rootGO.GetInstanceID();
@@ -197,18 +228,20 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
                 info.isSideParallel = false;
             }
 
-            // 本線(前後)かどうか
-            info.isParallelMain = parallel && !info.isSideParallel;
+            // この隣が「本線（前後方向）」かどうか
+            info.isParallelMain =
+                (offsetDir == selfDir) || (offsetDir == Opposite(selfDir));
 
-            // 相手の out が自分に向いているか？
-            // 自分→相手 が offsetDir なので、その逆が「自分の方向」
-            // 相手の out が自分に向いているか？（= 相手から自分へ流れてくる）
+            // 相手の out が自分に向いているか？（= 相手からこちらへ流れて来る）
+            // out 方向は otherDir、N→S が otherDir のとき S は自分、S-N は -offsetDir
             info.outTowardMe = (otherDir == Opposite(offsetDir));
 
             // 相手の in が自分に向いているか？（= 自分から相手へ流せる）
+            // in 方向は -otherDir。N→S が -otherDir のとき、S は自分、S-N は -offsetDir
+            // → -otherDir == -offsetDir → otherDir == offsetDir
             info.inTowardMe = (otherDir == offsetDir);
 
-            break; // 最初に見つけた1つだけ見る
+            break;
         }
 
         return info;
@@ -218,61 +251,18 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
     // メイン処理
     // -----------------------
 
-    /// <summary>
-    /// 周囲を調べて接続パターンを更新。
-    /// propagateToNeighbors = true にすると近隣ベルトにも再計算を伝播する。
-    /// </summary>
     public void RecalculatePattern(bool propagateToNeighbors)
     {
-        if (_belt == null || _sr == null) return;
+        if (_belt == null) _belt = GetComponent<ConveyorBelt>();
+        if (_sr == null) _sr = GetComponent<SpriteRenderer>();
 
         Vector3 pos = transform.position;
 
-        // 1) ワールド座標の上下左右で NeighborInfo を取得
+        // 1) 4方向の NeighborInfo 取得
         NeighborInfo neighborUp = GetNeighborInfo(pos, Vector2.up);
         NeighborInfo neighborRight = GetNeighborInfo(pos, Vector2.right);
         NeighborInfo neighborDown = GetNeighborInfo(pos, Vector2.down);
         NeighborInfo neighborLeft = GetNeighborInfo(pos, Vector2.left);
-
-        // 「自分に in を向けている隣」（= 自分の out 先になり得る隣）が
-        // 複数ある場合は、最後に置かれた（InstanceID が最大）の 1 本だけ残し、
-        // それ以外は存在しない扱いにする → 自分の out 方向は必ず 1 本だけになる
-        {
-            NeighborInfo[] arr = { neighborUp, neighborRight, neighborDown, neighborLeft };
-            int bestIndex = -1;
-            int bestId = int.MinValue;
-
-            for (int i = 0; i < 4; i++)
-            {
-                if (!arr[i].exists) continue;
-                if (!arr[i].inTowardMe) continue;
-
-                if (arr[i].instanceId > bestId)
-                {
-                    bestId = arr[i].instanceId;
-                    bestIndex = i;
-                }
-            }
-
-            if (bestIndex != -1)
-            {
-                for (int i = 0; i < 4; i++)
-                {
-                    if (!arr[i].exists) continue;
-                    if (!arr[i].inTowardMe) continue;
-                    if (i == bestIndex) continue;
-
-                    // それ以外の「自分に in を向けている隣」は無視する
-                    arr[i].exists = false;
-                }
-
-                neighborUp = arr[0];
-                neighborRight = arr[1];
-                neighborDown = arr[2];
-                neighborLeft = arr[3];
-            }
-        }
-
 
         // このコンベアーにとって「本線（前後方向）の接続」が存在するか？
         bool hasParallelMain =
@@ -281,27 +271,19 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
             (neighborDown.exists && neighborDown.isParallelMain) ||
             (neighborLeft.exists && neighborLeft.isParallelMain);
 
-        // NeighborInfo から「接続しているか？」を決めるローカル関数
+        // 「見た目として接続するか？」ロジック
         bool Connected(NeighborInfo n)
         {
             if (!n.exists) return false;
-            if (n.isSideParallel) return false;   // 平行な横並びは必ず接続しない
+            if (n.isSideParallel) return false;
 
             if (n.isOrthogonal)
             {
-                // 90°違う向き:
-                // 1) 相手の out が自分に向いているなら接続
                 if (n.outTowardMe) return true;
-
-                // 2) 自分に前後の本線があるなら、
-                //    そこに枝としてつなぐことを許可（T字, 3本交差など）
                 if (hasParallelMain) return true;
-
-                // 3) 本線もなく、outTowardMe も false のときだけ接続しない
                 return false;
             }
 
-            // それ以外（直列や普通のカーブなど）は接続扱い
             return true;
         }
 
@@ -310,40 +292,44 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         bool hasWorldDown = Connected(neighborDown);
         bool hasWorldLeft = Connected(neighborLeft);
 
-        // 2) ワールド方向を「このコンベアーのローカル U/R/D/L」に変換
-        bool localUpHas = false;
-        bool localRightHas = false;
-        bool localDownHas = false;
-        bool localLeftHas = false;
+        // 2) 世界座標の U/R/D/L を、このベルトのローカルU/R/D/Lにマッピング
+        bool localUpHas = false, localRightHas = false, localDownHas = false, localLeftHas = false;
 
-        if (hasWorldUp)
-            MarkLocalSide(Vector2.up, ref localUpHas, ref localRightHas, ref localDownHas, ref localLeftHas);
-        if (hasWorldRight)
-            MarkLocalSide(Vector2.right, ref localUpHas, ref localRightHas, ref localDownHas, ref localLeftHas);
-        if (hasWorldDown)
-            MarkLocalSide(Vector2.down, ref localUpHas, ref localRightHas, ref localDownHas, ref localLeftHas);
-        if (hasWorldLeft)
-            MarkLocalSide(Vector2.left, ref localUpHas, ref localRightHas, ref localDownHas, ref localLeftHas);
+        void MarkLocalSide(Vector2 worldDir, ref bool hasU, ref bool hasR, ref bool hasD, ref bool hasL)
+        {
+            int idx = WorldDirToLocalIndex(worldDir);
+            switch (idx)
+            {
+                case 0: hasU = true; break;
+                case 1: hasR = true; break;
+                case 2: hasD = true; break;
+                case 3: hasL = true; break;
+            }
+        }
 
-        // 3) in / out を決める
+        if (hasWorldUp) MarkLocalSide(Vector2.up, ref localUpHas, ref localRightHas, ref localDownHas, ref localLeftHas);
+        if (hasWorldRight) MarkLocalSide(Vector2.right, ref localUpHas, ref localRightHas, ref localDownHas, ref localLeftHas);
+        if (hasWorldDown) MarkLocalSide(Vector2.down, ref localUpHas, ref localRightHas, ref localDownHas, ref localLeftHas);
+        if (hasWorldLeft) MarkLocalSide(Vector2.left, ref localUpHas, ref localRightHas, ref localDownHas, ref localLeftHas);
+
+        // 3) ローカル接続から in/out を決める
         bool inU = false, inR = false, inD = false, inL = false;
         bool outU = false, outR = false, outD = false, outL = false;
 
-        int connectedCount =
+        int connectionCount =
             (localUpHas ? 1 : 0) +
             (localRightHas ? 1 : 0) +
             (localDownHas ? 1 : 0) +
             (localLeftHas ? 1 : 0);
 
-        if (connectedCount == 0)
+        if (connectionCount == 0)
         {
-            // どこともつながっていない → とりあえずローカル上向きに流すだけ
+            // 単独ベルト
             outU = true;
         }
-        else if (connectedCount == 1)
+        else if (connectionCount == 1)
         {
-            // 1方向だけつながっている:
-            // その1方向を in とみなし、out は必ずローカル上(=transform.up)にする
+            // デッドエンド: 1本から入ってきて上に抜ける
             if (localUpHas) inU = true;
             if (localRightHas) inR = true;
             if (localDownHas) inD = true;
@@ -354,11 +340,10 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         else
         {
             // 2方向以上つながっている:
-            // out は「前向き（transform.up）」に一番近い方向を選ぶ
-            Vector2 forward = transform.up.normalized;
+            // out は「前向き（transform.up）」に一番近い方向をメイン out とする
+            Vector2 forward = transform.up;
             float bestDot = -999f;
 
-            // Up
             if (localUpHas)
             {
                 float dot = Vector2.Dot(LocalToWorldDir(Vector2.up).normalized, forward);
@@ -368,7 +353,6 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
                     outU = true; outR = outD = outL = false;
                 }
             }
-            // Right
             if (localRightHas)
             {
                 float dot = Vector2.Dot(LocalToWorldDir(Vector2.right).normalized, forward);
@@ -378,7 +362,6 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
                     outR = true; outU = outD = outL = false;
                 }
             }
-            // Down
             if (localDownHas)
             {
                 float dot = Vector2.Dot(LocalToWorldDir(Vector2.down).normalized, forward);
@@ -388,7 +371,6 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
                     outD = true; outU = outR = outL = false;
                 }
             }
-            // Left
             if (localLeftHas)
             {
                 float dot = Vector2.Dot(LocalToWorldDir(Vector2.left).normalized, forward);
@@ -399,7 +381,7 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
                 }
             }
 
-            // out 以外でつながっている方向は全部 in
+            // in は「out 以外でつながっている方向」を全部 in とする
             if (localUpHas && !outU) inU = true;
             if (localRightHas && !outR) inR = true;
             if (localDownHas && !outD) inD = true;
@@ -437,60 +419,40 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         bool isCorner = false;
         if (hasIn && hasOut)
         {
-            float dot = Vector2.Dot(localInMove.normalized, localOutMove.normalized);
+            float dot = Vector2.Dot(worldInMove.normalized, worldOutMove.normalized);
             if (Mathf.Abs(dot) < 0.1f)
                 isCorner = true;
         }
         _belt.isCornerBelt = isCorner;
 
-        // moveDirection は出口方向
+        // moveDirection は「メイン出口方向」
         _belt.moveDirection = worldOutMove.normalized;
 
-        // ★ 追加：出口方向にいるベルトを outputs に登録
-        UpdateOutputsFromMoveDirection(pos);
+        // 6) 出力先ベルト(複数)を決定
+        List<ConveyorBelt> outputs = new List<ConveyorBelt>();
 
-        // 6) 近隣ベルトにも伝播（必要なら）
+        void TryAddOutputFromNeighbor(NeighborInfo n)
+        {
+            if (!n.exists) return;
+            if (!n.isBelt || n.beltRef == null) return;
+            if (!n.inTowardMe) return;        // 相手の in がこちらを向いていない → こちらからは流せない
+            if (!Connected(n)) return;        // 見た目上も接続している方向だけに限定
+
+            if (!outputs.Contains(n.beltRef))
+                outputs.Add(n.beltRef);
+        }
+
+        TryAddOutputFromNeighbor(neighborUp);
+        TryAddOutputFromNeighbor(neighborRight);
+        TryAddOutputFromNeighbor(neighborDown);
+        TryAddOutputFromNeighbor(neighborLeft);
+
+        _belt.outputs = outputs.Count > 0 ? outputs.ToArray() : null;
+
+        // 7) 近隣ベルトにも伝播（必要なら）
         if (propagateToNeighbors)
         {
             PropagateToNeighbors(pos);
-        }
-    }
-
-    // -----------------------
-    // ローカル方向関連
-    // -----------------------
-
-    /// <summary>
-    /// ワールド方向を、このコンベアーのローカル U/R/D/L のどれに一番近いかで分類する。
-    /// </summary>
-    void MarkLocalSide(
-        Vector2 worldDir,
-        ref bool hasU, ref bool hasR, ref bool hasD, ref bool hasL)
-    {
-        worldDir.Normalize();
-        Vector2 u = transform.up.normalized;
-        Vector2 r = transform.right.normalized;
-        Vector2 d = -u;
-        Vector2 l = -r;
-
-        float du = Vector2.Dot(worldDir, u);
-        float dr = Vector2.Dot(worldDir, r);
-        float dd = Vector2.Dot(worldDir, d);
-        float dl = Vector2.Dot(worldDir, l);
-
-        float max = du;
-        int side = 0; // 0:U 1:R 2:D 3:L
-
-        if (dr > max) { max = dr; side = 1; }
-        if (dd > max) { max = dd; side = 2; }
-        if (dl > max) { max = dl; side = 3; }
-
-        switch (side)
-        {
-            case 0: hasU = true; break;
-            case 1: hasR = true; break;
-            case 2: hasD = true; break;
-            case 3: hasL = true; break;
         }
     }
 
@@ -499,9 +461,20 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         return (Vector2)(transform.right * local.x + transform.up * local.y);
     }
 
+    // -----------------------
+    // 近隣への伝播
+    // -----------------------
+
     void PropagateToNeighbors(Vector3 basePos)
     {
-        Vector2[] dirs = { Vector2.up, Vector2.right, Vector2.down, Vector2.left };
+        Vector2[] dirs =
+        {
+            Vector2.up,
+            Vector2.right,
+            Vector2.down,
+            Vector2.left
+        };
+
         foreach (var d in dirs)
         {
             Vector2 center = (Vector2)basePos + d.normalized * cellSize;
@@ -522,52 +495,29 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// このベルトの moveDirection 方向にある隣接ベルトを探して
-    /// ConveyorBelt.outputs に登録する。
-    /// （とりあえず「前方1マス」のみ。直線・カーブはこれでOK）
-    /// </summary>
-    void UpdateOutputsFromMoveDirection(Vector3 basePos)
-    {
-        if (_belt == null) return;
-
-        Vector2 dir = _belt.moveDirection;
-        if (dir.sqrMagnitude < 0.0001f) return;
-        dir.Normalize();
-
-        // 前方1マスの中心を調べる
-        Vector2 center = (Vector2)basePos + dir * cellSize;
-        var hits = Physics2D.OverlapCircleAll(center, probeRadius, searchMask);
-        if (hits == null || hits.Length == 0)
-        {
-            _belt.outputs = null;
-            return;
-        }
-
-        List<ConveyorBelt> list = new List<ConveyorBelt>();
-
-        foreach (var h in hits)
-        {
-            if (!h) continue;
-            var belt = h.GetComponentInParent<ConveyorBelt>();
-            if (belt != null && belt != _belt && !list.Contains(belt))
-            {
-                list.Add(belt);
-            }
-        }
-
-        _belt.outputs = list.Count > 0 ? list.ToArray() : null;
-    }
-
     // -----------------------
     // スプライト選択
     // -----------------------
 
     Sprite GetPatternSprite(bool inU, bool inR, bool inD, bool inL,
-                            bool outU, bool outR, bool outD, bool outL)
+                        bool outU, bool outR, bool outD, bool outL)
     {
-        // out が複数立つケースは基本無い想定
+        // ================================
+        // ① T字（入力2本＋出力1本）を 最優先で判定
+        // ================================
 
+        // 下 + 左 から入ってきて 右 に出る（DinL Rout）
+        // → このパターン用のスプライトとして sprite_Din_LRout を使う
+        if (inD && inL && outR && !outU && !outD && !outL)
+            return sprite_Din_LRout;
+
+        // （必要になったら、下+右→左 などもここに追加できます）
+
+        // ================================
+        // ② それ以外は従来通りの判定
+        // ================================
+
+        // 上向きに出る系
         if (inR && outU && !inL && !inU && !inD) return sprite_Rin_Uout;
         if (inL && outU && !inR && !inU && !inD) return sprite_Lin_Uout;
         if (inL && inR && outU && !inU && !inD) return sprite_LRin_Uout;
@@ -575,10 +525,12 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         if (inL && inR && inD && outU) return sprite_LRDin_Uout;
         if (inR && inD && outU) return sprite_RDin_Uout;
         if (inL && inD && outU) return sprite_LDin_Uout;
+
+        // 横方向に出る（入力1本）系
         if (inD && outR) return sprite_Din_Rout;
         if (inD && outL) return sprite_Din_Lout;
 
-        // 以下は out が複数立つ想定のパターン（通常は使用されない）
+        // 出力が複数の変則パターン
         if (inD && outL && outR) return sprite_Din_LRout;
         if (inD && outL && outR && outU) return sprite_Din_LRUout;
         if (inD && outU && outR) return sprite_Din_URout;
