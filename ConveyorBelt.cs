@@ -59,6 +59,8 @@ public class ConveyorBelt : MonoBehaviour
         public GameObject go;
         public float distance;      // 入口側からの距離（0 ～ beltLength）
         public Vector2 inDirection; // このベルトに入ってきた方向
+        public ConveyorBelt chosenOutput; // 分配ベルトの場合、このアイテム専用の出力先
+        public Vector2 outDirection;      // このアイテム専用の出口方向（ワールド）
     }
 
     readonly List<LaneItem> _items = new List<LaneItem>();
@@ -243,6 +245,36 @@ public class ConveyorBelt : MonoBehaviour
             distance = Mathf.Clamp(distance, 0f, beltLength),
             inDirection = inDir.sqrMagnitude > 0.0001f ? inDir.normalized : (-mainOutDirectionWorld.normalized)
         };
+
+        // ★ 分配ベルトの場合、ここでこのアイテム専用の出力先を決めておく
+        if (outputs != null && outputs.Length > 0)
+        {
+            ConveyorBelt chosen = null;
+            int count = outputs.Length;
+            int start = _nextOutputIndex;
+            for (int i = 0; i < count; i++)
+            {
+                int idx = (start + i) % count;
+                var ob = outputs[idx];
+                if (ob == null) continue;
+                chosen = ob;
+                _nextOutputIndex = (idx + 1) % count;
+                break;
+            }
+
+            if (chosen != null)
+            {
+                li.chosenOutput = chosen;
+                Vector2 dir = (Vector2)(chosen.transform.position - transform.position);
+                if (dir.sqrMagnitude > 0.0001f)
+                    li.outDirection = dir.normalized;
+                else
+                    li.outDirection = mainOutDirectionWorld.sqrMagnitude > 0.0001f
+                        ? mainOutDirectionWorld.normalized
+                        : moveDirection.normalized;
+            }
+        }
+
         _items.Add(li);
 
         UpdateItemTransform(li);
@@ -328,6 +360,27 @@ public class ConveyorBelt : MonoBehaviour
         if (laneItem == null || laneItem.go == null) return false;
         if (outputs == null || outputs.Length == 0) return false;
 
+        // ★ laneItem に専用の出力先が設定されている場合は、まずそこだけを試す
+        if (laneItem.chosenOutput != null)
+        {
+            ConveyorBelt outBelt = laneItem.chosenOutput;
+            if (outBelt != null)
+            {
+                Vector2 inDir = (Vector2)(outBelt.transform.position - transform.position);
+                if (inDir.sqrMagnitude < 0.0001f)
+                    inDir = -outBelt.mainOutDirectionWorld.normalized;
+                else
+                    inDir = inDir.normalized;
+
+                if (outBelt.HasFreeInputSpace() && outBelt.InternalAccept(laneItem.go, 0f, inDir))
+                {
+                    return true;
+                }
+            }
+
+            // 専用出力が詰まっている / 消えている場合は、通常のロジックにフォールバック
+        }
+
         int count = outputs.Length;
         int start = _nextOutputIndex;
 
@@ -356,6 +409,7 @@ public class ConveyorBelt : MonoBehaviour
         return false;
     }
 
+
     // =====================================================================
     // 見た目（パス上の位置計算）
     // =====================================================================
@@ -364,13 +418,33 @@ public class ConveyorBelt : MonoBehaviour
     {
         if (li == null || li.go == null) return;
 
-        Vector3 pos = GetPositionOnPath(li.distance, li.inDirection);
+        // このアイテム専用の出口方向（分配ベルトなら chosenOutput に合わせる）
+        Vector2 outDir;
+        if (li.chosenOutput != null)
+        {
+            Vector2 d = (Vector2)(li.chosenOutput.transform.position - transform.position);
+            if (d.sqrMagnitude > 0.0001f)
+                outDir = d.normalized;
+            else
+                outDir = mainOutDirectionWorld.sqrMagnitude > 0.0001f
+                    ? mainOutDirectionWorld.normalized
+                    : moveDirection.normalized;
+        }
+        else
+        {
+            outDir = mainOutDirectionWorld.sqrMagnitude > 0.0001f
+                ? mainOutDirectionWorld.normalized
+                : moveDirection.normalized;
+        }
+
+        Vector3 pos = GetPositionOnPath(li.distance, li.inDirection, outDir);
         li.go.transform.position = pos;
 
         // ★ 回転は一切いじらない（角度そのまま）
     }
 
-    Vector3 GetPositionOnPath(float distance, Vector2 inDir)
+
+    Vector3 GetPositionOnPath(float distance, Vector2 inDir, Vector2 outDir)
     {
         float t = 0f;
         if (beltLength > 1e-5f)
@@ -383,13 +457,17 @@ public class ConveyorBelt : MonoBehaviour
 
         Vector3 pIn = transform.position - (Vector3)(dirIn * (beltLength * 0.5f));
 
-        // 出口方向はベルト共通
-        Vector2 dirOut = mainOutDirectionWorld.sqrMagnitude > 0.0001f
-            ? mainOutDirectionWorld.normalized
-            : moveDirection.normalized;
+        // このアイテム専用の出口方向（outDir 引数）
+        Vector2 dirOut = outDir.sqrMagnitude > 0.0001f
+            ? outDir.normalized
+            : (mainOutDirectionWorld.sqrMagnitude > 0.0001f ? mainOutDirectionWorld.normalized : moveDirection.normalized);
         Vector3 pOut = transform.position + (Vector3)(dirOut * (beltLength * 0.5f));
 
-        if (!isCornerBelt)
+        // in と out の角度差が大きいときだけコーナー処理にする（分配で横に曲がるときなど）
+        float dot = Vector2.Dot(dirIn, dirOut);
+        bool useCorner = Mathf.Abs(dot) < 0.99f;
+
+        if (!useCorner)
         {
             // 直線：入口→出口を線形補間
             return Vector3.Lerp(pIn, pOut, t);
@@ -401,12 +479,15 @@ public class ConveyorBelt : MonoBehaviour
             return QuadraticBezier(pIn, center, pOut, t);
         }
     }
-
-    static Vector3 QuadraticBezier(Vector3 p0, Vector3 p1, Vector3 p2, float t)
+    // =====================================================================
+    // 2次ベジェ曲線（P0 → P1 → P2 を t で補間）
+    // =====================================================================
+    Vector3 QuadraticBezier(Vector3 p0, Vector3 p1, Vector3 p2, float t)
     {
         float u = 1f - t;
-        return u * u * p0 + 2f * u * t * p1 + t * t * p2;
+        return (u * u) * p0 + (2f * u * t) * p1 + (t * t) * p2;
     }
+
 }
 
 /// <summary>

@@ -435,19 +435,49 @@ public class ConveyorBeltAutoConnector : MonoBehaviour
         {
             if (!n.exists) return;
             if (!n.isBelt || n.beltRef == null) return;
-            if (!n.inTowardMe) return;        // 相手の in がこちらを向いていない → こちらからは流せない
-            if (!Connected(n)) return;        // 見た目上も接続している方向だけに限定
+            if (!Connected(n)) return; // 見た目上つながっていることが前提
+
+            bool canSend = false;
+
+            // ① まずは従来通り、「相手の in がこちらを向いている」なら OK
+            if (n.inTowardMe)
+            {
+                canSend = true;
+            }
+            else
+            {
+                // ② それ以外でも、「このベルトの mainOutDirectionWorld の前方にある」なら
+                //    出力先として許可する（DinUout→カーブなどで inTowardMe が false になる救済策）
+                Vector2 toNeighbor = (Vector2)(n.beltRef.transform.position - transform.position);
+                if (toNeighbor.sqrMagnitude > 0.0001f)
+                {
+                    toNeighbor.Normalize();
+
+                    Vector2 outDir = _belt.mainOutDirectionWorld.sqrMagnitude > 0.0001f
+                        ? _belt.mainOutDirectionWorld.normalized
+                        : (Vector2)transform.up;
+
+                    float dot = Vector2.Dot(outDir, toNeighbor);
+                    // dot > 0.2 くらいなら、だいたい前方 80° 以内
+                    if (dot > 0.2f)
+                        canSend = true;
+                }
+            }
+
+            if (!canSend) return;
 
             if (!outputs.Contains(n.beltRef))
                 outputs.Add(n.beltRef);
         }
 
+        // 4方向それぞれについて出力候補を登録する
         TryAddOutputFromNeighbor(neighborUp);
         TryAddOutputFromNeighbor(neighborRight);
         TryAddOutputFromNeighbor(neighborDown);
         TryAddOutputFromNeighbor(neighborLeft);
 
         _belt.outputs = outputs.Count > 0 ? outputs.ToArray() : null;
+
 
         // 7) 近隣ベルトにも伝播（必要なら）
         if (propagateToNeighbors)
