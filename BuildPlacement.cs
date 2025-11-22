@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+﻿﻿using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Tilemaps;
@@ -500,6 +500,11 @@ public class BuildPlacement : MonoBehaviour
         {
             GameObject ghost = Instantiate(defToPlace.prefab, pos, rot, prefabParent);
 
+            // ★ 追加：コンベアなら「ゴーストモード」にしてロジック停止
+            var belt = ghost.GetComponent<ConveyorBelt>();
+            if (belt != null)
+                belt.SetGhostMode(true);
+
             // ★ ゴーストを GhostMachine レイヤーにして、Collider は有効のまま
             SetupGhostMachineLayer(ghost);
             SetSpriteColor(ghost.transform, new Color(1f, 1f, 1f, previewAlpha));
@@ -514,7 +519,6 @@ public class BuildPlacement : MonoBehaviour
             // ★ ここではまだドローンを動かさず、「計画中ゴースト」として登録だけ
             AddPlannedGhostForBig(defToPlace, cell, pos, ghost);
         }
-
 
         else
         {
@@ -580,6 +584,11 @@ public class BuildPlacement : MonoBehaviour
             // ★ 完成したので Machine 側のレイヤーに戻す
             RestoreMachineLayer(ghost, def);
 
+            // ★ 追加：コンベアならゴーストモード解除 → ロジックに復帰
+            var belt = ghost.GetComponent<ConveyorBelt>();
+            if (belt != null)
+                belt.SetGhostMode(false);
+
             _placedByCell[cell] = ghost;
             placedGo = ghost;
         }
@@ -589,6 +598,7 @@ public class BuildPlacement : MonoBehaviour
             _placedByCell[cell] = go;
             placedGo = go;
         }
+
 
         // ★ここで Machine 周囲更新を呼ぶ
         NotifyMachineNeighbors(placedGo);
@@ -729,6 +739,12 @@ public class BuildPlacement : MonoBehaviour
             : Quaternion.identity;
 
         GameObject ghost = Instantiate(_current.prefab, finalCenter, rot, prefabParent);
+
+        // ★ 追加：コンベアなら「ゴーストモード」にしてロジック停止
+        var belt = ghost.GetComponent<ConveyorBelt>();
+        if (belt != null)
+            belt.SetGhostMode(true);
+
         DisableColliders(ghost.transform);
         SetSpriteColor(ghost.transform, new Color(1f, 1f, 1f, previewAlpha));
 
@@ -763,6 +779,11 @@ public class BuildPlacement : MonoBehaviour
 
         // ★ 完成したので Machine 側のレイヤーに戻す
         RestoreMachineLayer(ghost, def);
+
+        // ★ 追加：コンベアならゴーストモード解除 → ロジックに復帰
+        var belt = ghost.GetComponent<ConveyorBelt>();
+        if (belt != null)
+            belt.SetGhostMode(false);
 
         var tmp = new List<Vector2Int>();
         foreach (var kv in _placedFine)

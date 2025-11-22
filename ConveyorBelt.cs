@@ -49,6 +49,8 @@ public class ConveyorBelt : MonoBehaviour
     public Vector2 mainOutDirectionWorld;
     [Tooltip("AutoConnector が設定するコーナーベルトフラグ。")]
     public bool isCornerBelt;
+    [Tooltip("ゴーストベルトフラグ（見た目だけのベルト）。")]
+    public bool isGhost = false;
 
     // =====================================================================
     // 内部データ
@@ -75,7 +77,10 @@ public class ConveyorBelt : MonoBehaviour
     void OnEnable()
     {
         FixDirections();
-        BeltLogicSystem.Register(this);
+
+        // ★ ゴーストでなければロジックに登録
+        if (!isGhost)
+            BeltLogicSystem.Register(this);
     }
 
     void OnDisable()
@@ -223,6 +228,23 @@ public class ConveyorBelt : MonoBehaviour
 
         return true;
     }
+
+    public void SetGhostMode(bool ghost)
+    {
+        isGhost = ghost;
+
+        if (ghost)
+        {
+            // ゴーストになった → ロジックから外す
+            BeltLogicSystem.Unregister(this);
+        }
+        else
+        {
+            // 完成した → ロジックに登録
+            BeltLogicSystem.Register(this);
+        }
+    }
+
 
     // =====================================================================
     // 内部ヘルパー
