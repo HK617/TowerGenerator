@@ -72,6 +72,13 @@ public class BuildPlacement : MonoBehaviour
     [Tooltip("隣マスチェック用の半径（小さい円でピンポイントに拾う）")]
     public float machineProbeRadius = 0.12f;
 
+    // ★ 追加: ゴースト状態の Machine 用レイヤー名
+    [Header("=== Ghost Machine Layer ===")]
+    [Tooltip("ゴースト状態のMachine系ビルドに使うLayer名（例: GhostMachine）")]
+    public string ghostMachineLayerName = "GhostMachine";
+
+    int _ghostMachineLayer = -2; // -2 = 未初期化, -1 = 見つからなかった
+
     [Header("=== Rotation ===")]
     [Tooltip("Rキーを押したときに回転する角度（度）")]
     public float rotationStepDeg = 90f;
@@ -89,6 +96,18 @@ public class BuildPlacement : MonoBehaviour
     readonly Dictionary<Vector3Int, GameObject> _placedByCell = new();
     readonly Dictionary<Vector2Int, GameObject> _placedFine = new();
     readonly HashSet<Vector3Int> _protectedCells = new();
+
+    // ★ ドローン建築用：スペースキーでまとめて着工するまで待つ「計画中ゴースト」のリスト
+    class PlannedGhost
+    {
+        public BuildingDef def;
+        public bool isFine;
+        public Vector3Int bigCell;
+        public Vector2Int fineCell;
+        public Vector3 worldPos;
+        public GameObject ghostGO;
+    }
+    readonly List<PlannedGhost> _plannedGhosts = new();
 
     // ===== セーブ用構造体 =====
     public struct SavedBuilding
@@ -162,6 +181,12 @@ public class BuildPlacement : MonoBehaviour
             _currentRotationDeg -= rotationStepDeg;
             if (_currentRotationDeg <= -360f) _currentRotationDeg += 360f;
             if (_currentRotationDeg >= 360f)  _currentRotationDeg -= 360f;
+        }
+
+        // ★ Spaceキーで「その時点で存在する計画中ゴースト」を一括でドローンキューへ
+        if (keyboard.spaceKey.wasPressedThisFrame)
+        {
+            StartPlannedBuilds();
         }
 
         Vector2 sp = mouse.position.ReadValue();
@@ -285,12 +310,19 @@ public class BuildPlacement : MonoBehaviour
                 machineLayerMask = 1 << idx;
         }
 
+        // ★ Machine と GhostMachine をまとめたマスクを作る
+        LayerMask mask = machineLayerMask;
+        int ghostLayer = GetGhostMachineLayer();
+        if (ghostLayer >= 0)
+        {
+            mask |= 1 << ghostLayer;
+        }
+
         Vector2 center = centerGo.transform.position;
 
         // centerGo の「前方」を transform.up として扱う
         Vector2 forward = centerGo.transform.up;
 
-        // それをワールドの Up/Right/Down/Left のどれに一番近いかで丸める
         Vector2[] worldDirs = { Vector2.up, Vector2.right, Vector2.down, Vector2.left };
         Vector2 bestDir = Vector2.up;
         float bestDot = -1f;
@@ -304,13 +336,14 @@ public class BuildPlacement : MonoBehaviour
             }
         }
 
-        // 「前方」と「真後ろ」の2方向だけチェック
         Vector2[] checkDirs = { bestDir, -bestDir };
 
         foreach (var dir in checkDirs)
         {
             Vector2 checkPos = center + dir * machineCellOffset;
-            Collider2D[] hits = Physics2D.OverlapCircleAll(checkPos, machineProbeRadius, machineLayerMask);
+
+            // ★ ここを machineLayerMask → mask に変更
+            Collider2D[] hits = Physics2D.OverlapCircleAll(checkPos, machineProbeRadius, mask);
             if (hits == null || hits.Length == 0) continue;
 
             foreach (var h in hits)
@@ -319,26 +352,90 @@ public class BuildPlacement : MonoBehaviour
                 var root = h.GetComponentInParent<Transform>();
                 if (root == null) continue;
 
-                // コンベアーなら接続再計算
                 var belt = root.GetComponent<ConveyorBelt>();
                 if (belt != null)
                 {
                     var connector = root.GetComponent<ConveyorBeltAutoConnector>();
                     if (connector != null)
                     {
-                        connector.RecalculatePattern(false); // ここでは波及OFF
+                        connector.RecalculatePattern(false);
                     }
                 }
 
-                // ドリル側で何か更新したければここに追加（今は特に無し）
                 var drill = root.GetComponent<DrillBehaviour>();
                 if (drill != null)
                 {
-                    // 例えば将来、前方ベルト有無で見た目を変えるなど
+                    // 今は特に処理なし
                 }
             }
         }
     }
+
+    int GetGhostMachineLayer()
+    {
+        if (_ghostMachineLayer != -2)
+            return _ghostMachineLayer;
+
+        if (string.IsNullOrEmpty(ghostMachineLayerName))
+        {
+            _ghostMachineLayer = -1;
+            return _ghostMachineLayer;
+        }
+
+        int layer = LayerMask.NameToLayer(ghostMachineLayerName);
+        if (layer < 0)
+        {
+            Debug.LogWarning($"BuildPlacement: GhostMachine layer '{ghostMachineLayerName}' が見つかりませんでした。");
+        }
+
+        _ghostMachineLayer = layer;
+        return _ghostMachineLayer;
+    }
+
+    void SetLayerRecursively(Transform root, int layer)
+    {
+        if (!root) return;
+        root.gameObject.layer = layer;
+        for (int i = 0; i < root.childCount; i++)
+        {
+            SetLayerRecursively(root.GetChild(i), layer);
+        }
+    }
+
+    // ゴーストを GhostMachine レイヤーにする（レイヤーが見つからなければ従来通りコライダー無効）
+    void SetupGhostMachineLayer(GameObject ghost)
+    {
+        if (!ghost) return;
+
+        int ghostLayer = GetGhostMachineLayer();
+        if (ghostLayer >= 0)
+        {
+            // レイヤーを GhostMachine に変更し、コライダーを有効化する
+            SetLayerRecursively(ghost.transform, ghostLayer);
+            foreach (var c in ghost.GetComponentsInChildren<Collider2D>(true)) c.enabled = true;
+            foreach (var c in ghost.GetComponentsInChildren<Collider>(true)) c.enabled = true;
+        }
+        else
+        {
+            // GhostMachine レイヤーが設定されていない場合は、従来通りコライダー無効で運用
+            DisableColliders(ghost.transform);
+        }
+    }
+
+    // 完成時に Machine 側のレイヤーに戻す
+    void RestoreMachineLayer(GameObject go, BuildingDef def)
+    {
+        if (!go) return;
+
+        int targetLayer = go.layer;
+        if (def != null && def.prefab != null)
+        {
+            targetLayer = def.prefab.layer;
+        }
+
+        SetLayerRecursively(go.transform, targetLayer);
+    }
+
 
     void AutoUpdateUseFineGridByZoom()
     {
@@ -402,15 +499,23 @@ public class BuildPlacement : MonoBehaviour
         if (useDroneBuild && droneManager != null)
         {
             GameObject ghost = Instantiate(defToPlace.prefab, pos, rot, prefabParent);
-            DisableColliders(ghost.transform);
+
+            // ★ ゴーストを GhostMachine レイヤーにして、Collider は有効のまま
+            SetupGhostMachineLayer(ghost);
             SetSpriteColor(ghost.transform, new Color(1f, 1f, 1f, previewAlpha));
 
             _placedByCell[cell] = ghost;
             if (isFirstBase)
                 _protectedCells.Add(cell);
 
-            droneManager.EnqueueBigBuild(this, defToPlace, cell, pos, ghost);
+            // ★ ゴースト設置時点で周囲のMachineに通知して、コンベアーのスプライト更新
+            NotifyMachineNeighbors(ghost);
+
+            // ★ ここではまだドローンを動かさず、「計画中ゴースト」として登録だけ
+            AddPlannedGhostForBig(defToPlace, cell, pos, ghost);
         }
+
+
         else
         {
             var go = Instantiate(defToPlace.prefab, pos, rot, prefabParent);
@@ -454,6 +559,10 @@ public class BuildPlacement : MonoBehaviour
                 foreach (var c in ghost.GetComponentsInChildren<Collider>(true))
                     c.enabled = true;
                 ghost.transform.position = pos;
+
+                // ★ 完成したので Machine 側のレイヤーに戻す
+                RestoreMachineLayer(ghost, def);
+
                 _placedByCell[cell] = ghost;
             }
             return;
@@ -467,6 +576,9 @@ public class BuildPlacement : MonoBehaviour
             foreach (var c in ghost.GetComponentsInChildren<Collider>(true))
                 c.enabled = true;
             ghost.transform.position = pos;
+
+            // ★ 完成したので Machine 側のレイヤーに戻す
+            RestoreMachineLayer(ghost, def);
 
             _placedByCell[cell] = ghost;
             placedGo = ghost;
@@ -540,8 +652,11 @@ public class BuildPlacement : MonoBehaviour
         {
             _placedByCell.Remove(cell);
             Destroy(go);
+            // ★ 計画中リストにも載っているかもしれないので削除
+            RemovePlannedGhostByGO(go);
             return;
         }
+
 
         Vector3 c = grid.GetCellCenterWorld(cell) + hoverOffset;
         var hits = Physics2D.OverlapCircleAll(c, detectRadius, placeableLayers);
@@ -612,12 +727,20 @@ public class BuildPlacement : MonoBehaviour
 
         if (useDroneBuild && droneManager != null)
         {
-            droneManager.EnqueueFineBuild(this, _current, fcell, finalCenter, ghost);
+            // ★ ゴーストを GhostMachine レイヤーにして、Collider を有効化
+            SetupGhostMachineLayer(ghost);
+
+            // ★ ゴースト設置時点で周囲のMachineに通知して、コンベアーのスプライト更新
+            NotifyMachineNeighbors(ghost);
+
+            // ★ ここでもまだドローンを動かさず、「計画中ゴースト」として登録だけ
+            AddPlannedGhostForFine(_current, fcell, finalCenter, ghost);
         }
         else
         {
             FinalizeFinePlacement(_current, fcell, finalCenter, ghost);
         }
+
     }
 
     public void FinalizeFinePlacement(BuildingDef def, Vector2Int fcell, Vector3 pos, GameObject ghost)
@@ -628,6 +751,9 @@ public class BuildPlacement : MonoBehaviour
         foreach (var c in ghost.GetComponentsInChildren<Collider2D>(true)) c.enabled = true;
         foreach (var c in ghost.GetComponentsInChildren<Collider>(true)) c.enabled = true;
         ghost.transform.position = pos;
+
+        // ★ 完成したので Machine 側のレイヤーに戻す
+        RestoreMachineLayer(ghost, def);
 
         var tmp = new List<Vector2Int>();
         foreach (var kv in _placedFine)
@@ -641,6 +767,79 @@ public class BuildPlacement : MonoBehaviour
 
         if (flowField != null && def != null)
             RegisterBuildingToFlowField(def, pos, true);
+    }
+
+    // ============================================================
+    // ★ ドローン建築：スペースキーでまとめて着工する仕組み
+    // ============================================================
+
+    void AddPlannedGhostForBig(BuildingDef def, Vector3Int cell, Vector3 pos, GameObject ghost)
+    {
+        if (def == null || ghost == null) return;
+
+        _plannedGhosts.Add(new PlannedGhost
+        {
+            def = def,
+            isFine = false,
+            bigCell = cell,
+            fineCell = default,
+            worldPos = pos,
+            ghostGO = ghost,
+        });
+    }
+
+    void AddPlannedGhostForFine(BuildingDef def, Vector2Int fcell, Vector3 pos, GameObject ghost)
+    {
+        if (def == null || ghost == null) return;
+
+        _plannedGhosts.Add(new PlannedGhost
+        {
+            def = def,
+            isFine = true,
+            bigCell = default,
+            fineCell = fcell,
+            worldPos = pos,
+            ghostGO = ghost,
+        });
+    }
+
+    void RemovePlannedGhostByGO(GameObject go)
+    {
+        if (go == null || _plannedGhosts.Count == 0) return;
+
+        for (int i = _plannedGhosts.Count - 1; i >= 0; i--)
+        {
+            if (_plannedGhosts[i].ghostGO == go)
+            {
+                _plannedGhosts.RemoveAt(i);
+            }
+        }
+    }
+
+    void StartPlannedBuilds()
+    {
+        // プレビュー中などは無効
+        if (s_buildLocked) return;
+        if (!useDroneBuild || droneManager == null) return;
+        if (_plannedGhosts.Count == 0) return;
+
+        // Space が押された瞬間に存在していた「計画中ゴースト」のスナップショットを取る
+        var snapshot = new List<PlannedGhost>(_plannedGhosts);
+        _plannedGhosts.Clear();
+
+        foreach (var g in snapshot)
+        {
+            if (g.def == null || g.ghostGO == null) continue;
+
+            if (g.isFine)
+            {
+                droneManager.EnqueueFineBuild(this, g.def, g.fineCell, g.worldPos, g.ghostGO);
+            }
+            else
+            {
+                droneManager.EnqueueBigBuild(this, g.def, g.bigCell, g.worldPos, g.ghostGO);
+            }
+        }
     }
 
     void DeleteAtFine(Vector2Int fcell, Vector3 worldCenter)
@@ -658,6 +857,8 @@ public class BuildPlacement : MonoBehaviour
             _placedFine.Remove(k);
 
         Destroy(go);
+        // ★ 計画中リストにも載っているかもしれないので削除
+        RemovePlannedGhostByGO(go);
 
         if (flowField != null)
             RegisterBuildingToFlowField(_current, finalCenter, false);
