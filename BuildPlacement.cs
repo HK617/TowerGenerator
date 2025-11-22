@@ -598,6 +598,7 @@ public class BuildPlacement : MonoBehaviour
     }
 
     // ★ Base専用の復元（ロード時やドローン完了時に共通で使う）
+    // ★ Base専用の復元（ロード時やドローン完了時に共通で使う）
     void RestoreBaseAt(BuildingDef baseDefToUse, Vector3 pos)
     {
         if (baseDefToUse == null) return;
@@ -611,6 +612,14 @@ public class BuildPlacement : MonoBehaviour
         // 2) Baseフラグと保護
         s_baseBuilt = true;
         _protectedCells.Add(cell);
+
+        // ★★★ ここを追加：Base の足元を細かいグリッドでも占有しておく
+        //     （Base の BuildingDef の cellsWidth / cellsHeight を使います）
+        if (fineCellSize > 0f)
+        {
+            var fcell = WorldToFineCell(pos, fineCellSize);
+            ReserveFineCells(fcell, baseDefToUse, baseGO);
+        }
 
         // 3) 下に六角タイルを敷く
         if (baseHexDef != null && baseHexDef.prefab != null)
@@ -849,6 +858,13 @@ public class BuildPlacement : MonoBehaviour
         if (!_placedFine.TryGetValue(fcell, out var go) || go == null)
             return;
 
+        // ★ Base は細かいグリッドからも削除不可にする
+        if (baseDef != null &&
+            go.name.Replace("(Clone)", "").Trim() == baseDef.prefab.name)
+        {
+            return;
+        }
+
         var keysToRemove = new List<Vector2Int>();
         foreach (var kv in _placedFine)
             if (kv.Value == go)
@@ -955,6 +971,39 @@ public class BuildPlacement : MonoBehaviour
                 {
                     return false;
                 }
+            }
+        }
+
+        // ★ Base がある細かいセルの上には何も置けないようにする
+        if (s_baseBuilt && baseDef != null)
+        {
+            float rBase = fineCellSize * 0.6f; // 少し狭めの半径
+            var hitsBase = Physics2D.OverlapCircleAll((Vector2)worldCenter, rBase);
+            foreach (var h in hitsBase)
+            {
+                if (!h) continue;
+
+                var root = h.transform.root;
+                bool isBase = false;
+
+                // ① Base プレハブに "Base" タグを付けている場合
+                if (root.CompareTag("Base"))
+                {
+                    isBase = true;
+                }
+                // ② タグが無い場合は、プレハブ名で判定する
+                else if (baseDef.prefab != null)
+                {
+                    string rootName = root.name;
+                    if (rootName.EndsWith("(Clone)"))
+                        rootName = rootName.Substring(0, rootName.Length - 7).TrimEnd();
+
+                    if (rootName == baseDef.prefab.name)
+                        isBase = true;
+                }
+
+                if (isBase)
+                    return false;
             }
         }
 
@@ -1190,6 +1239,14 @@ public class BuildPlacement : MonoBehaviour
                 if (!_placedByCell.ContainsKey(cell))
                 {
                     _placedByCell.Add(cell, child.gameObject);
+
+                    // ★ Base プレハブなら細かいグリッドも占有しておく
+                    if (baseDef != null && child.name.Replace("(Clone)", "").Trim() == baseDef.prefab.name)
+                    {
+                        var fcell = WorldToFineCell(child.position, fineCellSize);
+                        ReserveFineCells(fcell, baseDef, child.gameObject);
+                    }
+
                     continue;
                 }
             }
