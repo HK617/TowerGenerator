@@ -1242,6 +1242,63 @@ public class BuildPlacement : MonoBehaviour
         }
     }
 
+    // ============================================================
+    // ★ 外部UI（SelectionBoxDrawer）からの一括解体予約
+    // ============================================================
+    public void EnsureDemolitionPlannedForObject(GameObject target)
+    {
+        if (target == null) return;
+
+        // すでに計画済みなら何もしない
+        for (int i = 0; i < _plannedDemolitions.Count; i++)
+        {
+            if (_plannedDemolitions[i].target == target)
+                return;
+        }
+
+        // まず Fine グリッド側（四角グリッド）のセルを探す
+        foreach (var kv in _placedFine)   // Dictionary<Vector2Int, GameObject>
+        {
+            if (kv.Value == target)
+            {
+                var d = new PlannedDemolition
+                {
+                    isFine = true,
+                    bigCell = default,
+                    fineCell = kv.Key,
+                    target = target
+                };
+                _plannedDemolitions.Add(d);
+
+                // 四角グリッド用アイコン
+                AddDemolitionIcon(target, isFineGrid: true);
+                return;
+            }
+        }
+
+        // 次に Big グリッド側（六角タイル）のセルを探す
+        foreach (var kv in _placedByCell) // Dictionary<Vector3Int, GameObject>
+        {
+            if (kv.Value == target)
+            {
+                var d = new PlannedDemolition
+                {
+                    isFine = false,
+                    bigCell = kv.Key,
+                    fineCell = default,
+                    target = target
+                };
+                _plannedDemolitions.Add(d);
+
+                // 六角タイル用アイコン
+                AddDemolitionIcon(target, isFineGrid: false);
+                return;
+            }
+        }
+
+        // どの辞書にも無ければ何もしない（例：ゴーストなど）
+    }
+
     bool CanPlaceAtFine(Vector2Int fcell, Vector3 worldCenter)
     {
         if (_current == null) return false;
