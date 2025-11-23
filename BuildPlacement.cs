@@ -84,10 +84,35 @@ public class BuildPlacement : MonoBehaviour
     public float rotationStepDeg = 90f;
     float _currentRotationDeg = 0f;
 
+    [Header("=== Demolition Icon ===")]
+    public Sprite hexDemolitionIconSprite;    // 六角タイル / Big グリッド用
+    public Sprite fineDemolitionIconSprite;   // 細かい四角グリッド用
+
+    [Tooltip("六角タイル用アイコンの基準スケール")]
+    public float hexDemolitionIconScale = 1f;
+
+    [Tooltip("四角グリッド用アイコンの基準スケール")]
+    public float fineDemolitionIconScale = 1f;
+
+    [Tooltip("六角タイル用アイコンの高さオフセット")]
+    public float hexDemolitionIconYOffset = 0.6f;
+
+    [Tooltip("四角グリッド用アイコンの高さオフセット")]
+    public float fineDemolitionIconYOffset = 0.6f;
+
+
     // 連続設置中かどうか
     bool _isDragging = false;
     readonly List<(Vector2Int cell, Vector3 center)> _previewCells = new();
     readonly List<GameObject> _dragGhosts = new();
+
+    // ★ 右クリックドラッグ削除用（Fineは「セル」ではなく「建物単位」で管理）
+    bool _isRightDraggingFine = false;
+    readonly HashSet<GameObject> _rightDragDeletedFine = new();
+
+    bool _isRightDraggingBig = false;
+    readonly HashSet<Vector3Int> _rightDragDeletedBig = new();
+
 
     BuildingDef _current;
     GameObject _spawnedPreviewGO;
@@ -108,6 +133,27 @@ public class BuildPlacement : MonoBehaviour
         public GameObject ghostGO;
     }
     readonly List<PlannedGhost> _plannedGhosts = new();
+
+    // ★ この GameObject が「計画中ゴースト」かどうか
+    bool IsPlannedGhostGO(GameObject go)
+    {
+        if (go == null) return false;
+        for (int i = 0; i < _plannedGhosts.Count; i++)
+        {
+            if (_plannedGhosts[i].ghostGO == go)
+                return true;
+        }
+        return false;
+    }
+
+    class PlannedDemolition
+    {
+        public bool isFine;
+        public Vector3Int bigCell;
+        public Vector2Int fineCell;
+        public GameObject target;      // 実物（既に建っているプレハブ）
+    }
+    readonly List<PlannedDemolition> _plannedDemolitions = new();
 
     // ===== セーブ用構造体 =====
     public struct SavedBuilding
@@ -187,6 +233,7 @@ public class BuildPlacement : MonoBehaviour
         if (keyboard.spaceKey.wasPressedThisFrame)
         {
             StartPlannedBuilds();
+            StartPlannedDemolitions(); 
         }
 
         Vector2 sp = mouse.position.ReadValue();
@@ -256,19 +303,48 @@ public class BuildPlacement : MonoBehaviour
                 _isDragging = false;
             }
 
+            // 右クリック長押しで削除（ドラッグ中ならプレビューキャンセル）
             if (mouse.rightButton.wasPressedThisFrame)
             {
                 if (_isDragging || _previewCells.Count > 0)
                 {
+                    // 左ドラッグ中なら「設置プレビューキャンセル」のみ
                     _previewCells.Clear();
                     ClearDragGhosts();
                     _isDragging = false;
+
+                    _isRightDraggingFine = false;
+                    _rightDragDeletedFine.Clear();
                 }
                 else
                 {
-                    DeleteAtFine(fineCell, finalCenter);
+                    // 削除ドラッグ開始
+                    _isRightDraggingFine = true;
+                    _rightDragDeletedFine.Clear();
                 }
             }
+
+            if (_isRightDraggingFine && mouse.rightButton.isPressed)
+            {
+                // そのセルに建物があるか確認
+                if (_placedFine.TryGetValue(fineCell, out var go) && go != null)
+                {
+                    // ★ このドラッグ中に「まだこの建物を処理していなければ」だけ実行
+                    if (!_rightDragDeletedFine.Contains(go))
+                    {
+                        DeleteAtFine(fineCell, finalCenter);
+                        _rightDragDeletedFine.Add(go);
+                    }
+                }
+            }
+
+
+            if (_isRightDraggingFine && mouse.rightButton.wasReleasedThisFrame)
+            {
+                _isRightDraggingFine = false;
+                _rightDragDeletedFine.Clear();
+            }
+
             return;
         }
         else
@@ -285,8 +361,28 @@ public class BuildPlacement : MonoBehaviour
 
                 if (mouse.leftButton.wasPressedThisFrame)
                     PlaceAtBig(cell);
+
+                // 右クリック長押しで削除
                 if (mouse.rightButton.wasPressedThisFrame)
-                    DeleteAtBig(cell);
+                {
+                    _isRightDraggingBig = true;
+                    _rightDragDeletedBig.Clear();
+                }
+
+                if (_isRightDraggingBig && mouse.rightButton.isPressed)
+                {
+                    if (!_rightDragDeletedBig.Contains(cell))
+                    {
+                        DeleteAtBig(cell);
+                        _rightDragDeletedBig.Add(cell);
+                    }
+                }
+
+                if (_isRightDraggingBig && mouse.rightButton.wasReleasedThisFrame)
+                {
+                    _isRightDraggingBig = false;
+                    _rightDragDeletedBig.Clear();
+                }
             }
         }
 #endif
@@ -542,6 +638,22 @@ public class BuildPlacement : MonoBehaviour
         }
     }
 
+    public void FinalizeBigDemolish(Vector3Int cell, GameObject target)
+    {
+        // アイコンを消す（念のため）
+        RemoveDemolitionIcon(target);
+
+        // グリッド辞書から消す
+        _placedByCell.Remove(cell);
+
+        // FlowField / Conveyor への通知
+        NotifyMachineNeighbors(target);              // つながり再計算
+        if (flowField != null)
+            RegisterBuildingToFlowField(null, target.transform.position, false);
+
+        Destroy(target);
+    }
+
     // ドローンが完了したときに呼ぶ、六角(ビッグ)セル用の軽量完成処理
     public void FinalizeBigPlacement(BuildingDef def, Vector3Int cell, Vector3 pos, GameObject ghost)
     {
@@ -608,7 +720,6 @@ public class BuildPlacement : MonoBehaviour
     }
 
     // ★ Base専用の復元（ロード時やドローン完了時に共通で使う）
-    // ★ Base専用の復元（ロード時やドローン完了時に共通で使う）
     void RestoreBaseAt(BuildingDef baseDefToUse, Vector3 pos)
     {
         if (baseDefToUse == null) return;
@@ -667,16 +778,24 @@ public class BuildPlacement : MonoBehaviour
         if (_protectedCells.Contains(cell))
             return;
 
+        // まず _placedByCell に登録されているオブジェクトを調べる
         if (_placedByCell.TryGetValue(cell, out var go) && go)
         {
-            _placedByCell.Remove(cell);
-            Destroy(go);
-            // ★ 計画中リストにも載っているかもしれないので削除
-            RemovePlannedGhostByGO(go);
+            // ★ ゴーストなら即削除
+            if (IsPlannedGhostGO(go))
+            {
+                _placedByCell.Remove(cell);
+                RemovePlannedGhostByGO(go);
+                Destroy(go);
+                return;
+            }
+
+            // 完成済みなら解体予約トグル
+            ToggleDemolitionForBig(cell, go);
             return;
         }
 
-
+        // フォールバック：辞書に無いがそこに何かある場合
         Vector3 c = grid.GetCellCenterWorld(cell) + hoverOffset;
         var hits = Physics2D.OverlapCircleAll(c, detectRadius, placeableLayers);
         foreach (var h in hits)
@@ -684,9 +803,55 @@ public class BuildPlacement : MonoBehaviour
             var hc = grid.WorldToCell(h.transform.position - hoverOffset);
             if (_protectedCells.Contains(hc)) continue;
 
-            _placedByCell.Remove(hc);
-            Destroy(h.gameObject);
+            if (IsPlannedGhostGO(h.gameObject))
+            {
+                _placedByCell.Remove(hc);
+                RemovePlannedGhostByGO(h.gameObject);
+                Destroy(h.gameObject);
+            }
+            else
+            {
+                ToggleDemolitionForBig(hc, h.gameObject);
+            }
             return;
+        }
+    }
+
+    // ★ Big用：解体予約のオン/オフ
+    void ToggleDemolitionForBig(Vector3Int cell, GameObject go)
+    {
+        // すでに解体予約されているか探す
+        int idx = -1;
+        for (int i = 0; i < _plannedDemolitions.Count; i++)
+        {
+            var d = _plannedDemolitions[i];
+            if (!d.isFine && d.target == go)
+            {
+                idx = i;
+                break;
+            }
+        }
+
+        if (idx >= 0)
+        {
+            // すでに予約済み → 予約キャンセル
+            _plannedDemolitions.RemoveAt(idx);
+            RemoveDemolitionIcon(go);
+        }
+        else
+        {
+            // まだ予約されていない → 予約追加
+            var d = new PlannedDemolition
+            {
+                isFine = false,
+                bigCell = cell,
+                fineCell = default,
+                target = go
+            };
+            _plannedDemolitions.Add(d);
+
+            // ★ 六角タイル用アイコン
+            AddDemolitionIcon(go, isFineGrid: false);
         }
     }
 
@@ -766,6 +931,25 @@ public class BuildPlacement : MonoBehaviour
             FinalizeFinePlacement(_current, fcell, finalCenter, ghost);
         }
 
+    }
+
+    public void FinalizeFineDemolish(Vector2Int fcell, GameObject target)
+    {
+        // この建物に紐づいているすべてのセルを削除
+        var keysToRemove = new List<Vector2Int>();
+        foreach (var kv in _placedFine)
+            if (kv.Value == target)
+                keysToRemove.Add(kv.Key);
+        foreach (var k in keysToRemove)
+            _placedFine.Remove(k);
+
+        RemoveDemolitionIcon(target);
+
+        NotifyMachineNeighbors(target);
+        if (flowField != null)
+            RegisterBuildingToFlowField(null, target.transform.position, false);
+
+        Destroy(target);
     }
 
     public void FinalizeFinePlacement(BuildingDef def, Vector2Int fcell, Vector3 pos, GameObject ghost)
@@ -872,6 +1056,121 @@ public class BuildPlacement : MonoBehaviour
         }
     }
 
+    void StartPlannedDemolitions()
+    {
+        if (s_buildLocked) return;
+        if (!useDroneBuild || droneManager == null) return;
+        if (_plannedDemolitions.Count == 0) return;
+
+        var snapshot = new List<PlannedDemolition>(_plannedDemolitions);
+        _plannedDemolitions.Clear();
+
+        foreach (var d in snapshot)
+        {
+            if (d.target == null) continue;
+
+            if (d.isFine)
+            {
+                droneManager.EnqueueFineDemolish(this, d.fineCell, d.target);
+            }
+            else
+            {
+                droneManager.EnqueueBigDemolish(this, d.bigCell, d.target);
+            }
+        }
+    }
+
+    // ============================================================
+    // ★ 解体アイコンの追加・削除
+    // ============================================================
+    void RemoveDemolitionIcon(GameObject target)
+    {
+        if (target == null) return;
+
+        // 新方式：ルートごと消す
+        var root = target.transform.Find("DemolitionIconRoot");
+        if (root != null)
+        {
+            Destroy(root.gameObject);
+            return;
+        }
+
+        // 互換性のため、昔の単体アイコンも消しておく
+        var icon = target.transform.Find("DemolitionIcon");
+        if (icon != null)
+            Destroy(icon.gameObject);
+    }
+
+    // isFineGrid = true なら 四角グリッド用アイコン / false なら 六角タイル用
+    void AddDemolitionIcon(GameObject target, bool isFineGrid)
+    {
+        if (target == null) return;
+
+        // いったん既存アイコンを消してリセット
+        var oldRoot = target.transform.Find("DemolitionIconRoot");
+        if (oldRoot != null)
+            Destroy(oldRoot.gameObject);
+        var oldSingle = target.transform.Find("DemolitionIcon");
+        if (oldSingle != null)
+            Destroy(oldSingle.gameObject);
+
+        GameObject root = new GameObject("DemolitionIconRoot");
+        root.transform.SetParent(target.transform, false);
+        root.transform.localPosition = Vector3.zero;
+
+        // 親スケールの逆数（建物の大きさに左右されないようにする）
+        var parentScale = target.transform.lossyScale;
+        float invX = (parentScale.x != 0f) ? 1f / parentScale.x : 1f;
+        float invY = (parentScale.y != 0f) ? 1f / parentScale.y : 1f;
+
+        if (!isFineGrid)
+        {
+            // ★ 六角タイル / Big グリッド用：建物の中心に1個だけ
+            float yOffset = hexDemolitionIconYOffset;
+
+            var icon = new GameObject("DemolitionIcon");
+            icon.transform.SetParent(root.transform, false);
+            icon.transform.localPosition = new Vector3(0, yOffset, 0);
+
+            var sr = icon.AddComponent<SpriteRenderer>();
+            sr.sprite = hexDemolitionIconSprite;
+            sr.sortingOrder = 999;
+
+            icon.transform.localScale = new Vector3(invX, invY, 1f) * hexDemolitionIconScale;
+        }
+        else
+        {
+            // ★ 四角グリッド用：占有しているすべての Fine セルにアイコンを置く
+            var usedCells = new HashSet<Vector2Int>();
+            foreach (var kv in _placedFine)
+            {
+                if (kv.Value == target)
+                    usedCells.Add(kv.Key);
+            }
+
+            foreach (var cell in usedCells)
+            {
+                // セルの中心のワールド座標
+                Vector3 cellWorld = FineCellToWorld(cell, fineCellSize);
+                cellWorld.y += fineDemolitionIconYOffset;
+
+                // 建物ローカル座標に変換
+                Vector3 localPos = target.transform.InverseTransformPoint(cellWorld);
+
+                var icon = new GameObject("DemolitionIcon");
+                icon.transform.SetParent(root.transform, false);
+                icon.transform.localPosition = localPos;
+
+                var sr = icon.AddComponent<SpriteRenderer>();
+                sr.sprite = fineDemolitionIconSprite;
+                sr.sortingOrder = 999;
+
+                icon.transform.localScale = new Vector3(invX, invY, 1f) * fineDemolitionIconScale;
+            }
+        }
+    }
+
+
     void DeleteAtFine(Vector2Int fcell, Vector3 worldCenter)
     {
         Vector3 finalCenter = worldCenter;
@@ -886,19 +1185,61 @@ public class BuildPlacement : MonoBehaviour
             return;
         }
 
-        var keysToRemove = new List<Vector2Int>();
-        foreach (var kv in _placedFine)
-            if (kv.Value == go)
-                keysToRemove.Add(kv.Key);
-        foreach (var k in keysToRemove)
-            _placedFine.Remove(k);
+        // ★ ゴーストなら即削除（占有している全てのセルも解放）
+        if (IsPlannedGhostGO(go))
+        {
+            var keysToRemove = new List<Vector2Int>();
+            foreach (var kv in _placedFine)
+                if (kv.Value == go)
+                    keysToRemove.Add(kv.Key);
+            foreach (var k in keysToRemove)
+                _placedFine.Remove(k);
 
-        Destroy(go);
-        // ★ 計画中リストにも載っているかもしれないので削除
-        RemovePlannedGhostByGO(go);
+            RemovePlannedGhostByGO(go);
+            Destroy(go);
+            // ゴーストは FlowField にまだ登録していないので何もしない
+            return;
+        }
 
-        if (flowField != null)
-            RegisterBuildingToFlowField(_current, finalCenter, false);
+        // 完成済みなら解体予約トグル
+        ToggleDemolitionForFine(fcell, go);
+    }
+
+    // ★ Fine用：解体予約のオン/オフ
+    void ToggleDemolitionForFine(Vector2Int fcell, GameObject go)
+    {
+        int idx = -1;
+        for (int i = 0; i < _plannedDemolitions.Count; i++)
+        {
+            var d = _plannedDemolitions[i];
+            if (d.isFine && d.target == go)
+            {
+                idx = i;
+                break;
+            }
+        }
+
+        if (idx >= 0)
+        {
+            // すでに予約済み → 予約キャンセル
+            _plannedDemolitions.RemoveAt(idx);
+            RemoveDemolitionIcon(go);
+        }
+        else
+        {
+            // まだ予約されていない → 予約追加
+            var d = new PlannedDemolition
+            {
+                isFine = true,
+                bigCell = default,
+                fineCell = fcell,
+                target = go
+            };
+            _plannedDemolitions.Add(d);
+
+            // ★ 四角グリッド用アイコン
+            AddDemolitionIcon(go, isFineGrid: true);
+        }
     }
 
     bool CanPlaceAtFine(Vector2Int fcell, Vector3 worldCenter)

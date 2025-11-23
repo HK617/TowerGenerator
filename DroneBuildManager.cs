@@ -26,20 +26,27 @@ public class DroneBuildManager : MonoBehaviour
     // ─────────────────────────────────────────────
 
     // タスク（建築依頼）
-    public enum TaskKind { Big, Fine }
+    public enum TaskKind
+    {
+        BigBuild,
+        FineBuild,
+        BigDemolish,
+        FineDemolish
+    }
 
     [Serializable]
     public class BuildTask
     {
         public TaskKind kind;
         public BuildPlacement placer;
-        public BuildingDef def;
-        public GameObject ghost;
+        public BuildingDef def;       // Build のときだけ使用
+        public GameObject ghost;      // Build のときだけ使用
 
         public Vector3Int bigCell;
         public Vector3 worldPos;
-
         public Vector2Int fineCell;
+
+        public GameObject targetToDemolish;  // ★ 解体対象
     }
 
     // 旧コード互換
@@ -98,7 +105,7 @@ public class DroneBuildManager : MonoBehaviour
     {
         var t = new BuildTask
         {
-            kind = TaskKind.Big,
+            kind = TaskKind.BigBuild,
             placer = placer,
             def = def,
             bigCell = cell,
@@ -113,7 +120,7 @@ public class DroneBuildManager : MonoBehaviour
     {
         var t = new BuildTask
         {
-            kind = TaskKind.Fine,
+            kind = TaskKind.FineBuild,
             placer = placer,
             def = def,
             fineCell = cell,
@@ -152,6 +159,32 @@ public class DroneBuildManager : MonoBehaviour
         NotifyUI();
     }
 
+    public void EnqueueBigDemolish(BuildPlacement placer, Vector3Int cell, GameObject target)
+    {
+        var t = new BuildTask
+        {
+            kind = TaskKind.BigDemolish,
+            placer = placer,
+            bigCell = cell,
+            worldPos = target.transform.position,
+            targetToDemolish = target
+        };
+        EnqueueTask(t);
+    }
+
+    public void EnqueueFineDemolish(BuildPlacement placer, Vector2Int cell, GameObject target)
+    {
+        var t = new BuildTask
+        {
+            kind = TaskKind.FineDemolish,
+            placer = placer,
+            fineCell = cell,
+            worldPos = target.transform.position,
+            targetToDemolish = target
+        };
+        EnqueueTask(t);
+    }
+
     // ドローンから「終わった」と言われたとき
     public void NotifyDroneFinished(DroneWorker worker, BuildTask task, bool success = true)
     {
@@ -182,11 +215,18 @@ public class DroneBuildManager : MonoBehaviour
     {
         switch (task.kind)
         {
-            case TaskKind.Big:
+            case TaskKind.BigBuild:
                 task.placer?.FinalizeBigPlacement(task.def, task.bigCell, task.worldPos, task.ghost);
                 break;
-            case TaskKind.Fine:
+            case TaskKind.FineBuild:
                 task.placer?.FinalizeFinePlacement(task.def, task.fineCell, task.worldPos, task.ghost);
+                break;
+
+            case TaskKind.BigDemolish:
+                task.placer?.FinalizeBigDemolish(task.bigCell, task.targetToDemolish);
+                break;
+            case TaskKind.FineDemolish:
+                task.placer?.FinalizeFineDemolish(task.fineCell, task.targetToDemolish);
                 break;
         }
     }
@@ -271,9 +311,18 @@ public class DroneBuildManager : MonoBehaviour
 
     DroneTaskData ToTaskData(BuildTask t)
     {
+        string kindStr = "";
+        switch (t.kind)
+        {
+            case TaskKind.BigBuild: kindStr = "BigBuild"; break;
+            case TaskKind.FineBuild: kindStr = "FineBuild"; break;
+            case TaskKind.BigDemolish: kindStr = "BigDemolish"; break;
+            case TaskKind.FineDemolish: kindStr = "FineDemolish"; break;
+        }
+
         return new DroneTaskData
         {
-            kind = t.kind == TaskKind.Big ? "Big" : "Fine",
+            kind = kindStr,
             defName = t.def ? t.def.displayName : "",
             worldPos = t.worldPos,
             bigCell = t.bigCell,
@@ -289,13 +338,23 @@ public class DroneBuildManager : MonoBehaviour
         GameObject ghost = null;
         if (data.ghost && def != null && placement != null)
         {
-            bool fine = data.kind == "Fine";
+            bool fine = (data.kind == "FineBuild" || data.kind == "FineDemolish");
             ghost = placement.CreateGhostForDef(def, data.worldPos, fine);
+        }
+
+        // kind を復元
+        TaskKind kindEnum = TaskKind.BigBuild;
+        switch (data.kind)
+        {
+            case "BigBuild": kindEnum = TaskKind.BigBuild; break;
+            case "FineBuild": kindEnum = TaskKind.FineBuild; break;
+            case "BigDemolish": kindEnum = TaskKind.BigDemolish; break;
+            case "FineDemolish": kindEnum = TaskKind.FineDemolish; break;
         }
 
         var t = new BuildTask
         {
-            kind = (data.kind == "Big") ? TaskKind.Big : TaskKind.Fine,
+            kind = kindEnum,
             placer = placement,
             def = def,
             ghost = ghost,

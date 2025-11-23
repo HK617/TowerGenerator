@@ -169,13 +169,24 @@ public class DroneWorker : MonoBehaviour
         GameObject ghost = null;
         if (data.task.ghost && def != null && placement != null)
         {
-            bool fine = data.task.kind == "Fine";
+            // "FineBuild" / "FineDemolish" ‚Ì‚Æ‚«‚¾‚¯ fine = true
+            bool fine = (data.task.kind == "FineBuild" || data.task.kind == "FineDemolish");
             ghost = placement.CreateGhostForDef(def, data.task.worldPos, fine);
+        }
+
+        // kind ‚ð•¶Žš—ñ‚©‚ç enum ‚É•œŒ³
+        DroneBuildManager.TaskKind kindEnum = DroneBuildManager.TaskKind.BigBuild;
+        switch (data.task.kind)
+        {
+            case "BigBuild": kindEnum = DroneBuildManager.TaskKind.BigBuild; break;
+            case "FineBuild": kindEnum = DroneBuildManager.TaskKind.FineBuild; break;
+            case "BigDemolish": kindEnum = DroneBuildManager.TaskKind.BigDemolish; break;
+            case "FineDemolish": kindEnum = DroneBuildManager.TaskKind.FineDemolish; break;
         }
 
         var task = new DroneBuildManager.BuildTask
         {
-            kind = (data.task.kind == "Big") ? DroneBuildManager.TaskKind.Big : DroneBuildManager.TaskKind.Fine,
+            kind = kindEnum,
             placer = placement,
             def = def,
             ghost = ghost,
