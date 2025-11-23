@@ -173,7 +173,6 @@ public class BuildBarUI : MonoBehaviour
         return vcam.Lens.OrthographicSize <= fineGridThreshold;
     }
 
-    // ================== 選択 ==================
     void Select(int index)
     {
         int max = GetMaxCount();
@@ -189,14 +188,15 @@ public class BuildBarUI : MonoBehaviour
         bool isFine = ShouldUseFineGridNow();
         BuildingDef defToUse = isFine ? zoomedInDefs[index] : items[index];
 
-        // ズームインしてるのにそのスロットのズーム用がnullなら通常版にフォールバック
         if (defToUse == null)
             defToUse = items[index];
 
-        // placementへ
         if (placement)
         {
-            placement.useFineGrid = isFine;   // ズームに合わせる
+            // ★ ここで SelectionBoxDrawer に「建築モード開始」を知らせる
+            SelectionBoxDrawer.NotifyBuildModeStartedFromOutside();
+
+            placement.useFineGrid = isFine;
             placement.SetSelected(defToUse);
         }
     }

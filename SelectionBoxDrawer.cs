@@ -1,5 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.EventSystems;
 
 // 新 Input System 対応
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
@@ -10,259 +12,348 @@ using UnityEngine.InputSystem;
 /// ワールド空間型の選択長方形。
 /// Shift + 左ドラッグで地面上に水色の半透明四角を出し、
 /// その範囲に触れている 2D Collider を持つブロックをハイライトする。
+/// 範囲選択が終わったら右側の固定メニューを表示して、
+/// 各ボタンごとにタググループで色分けする。
+///
+/// ・選択開始時に BuildPlacement.s_buildLocked = true で建築モード停止
+/// ・建築ボタンが押されたら NotifyBuildModeStartedFromOutside() から
+///   ハイライト / メニューを消してロック解除
 /// </summary>
 public class SelectionBoxDrawer : MonoBehaviour
 {
-    [Header("World Selection Rect")]
-    [Tooltip("ワールド空間に置く選択枠のルート（中に SpriteRenderer を持つ子オブジェクトがある前提）")]
-    public Transform selectionRectRoot;
+    // 他クラスからアクセスする用
+    public static SelectionBoxDrawer Instance { get; private set; }
 
-    [Tooltip("選択枠の見た目に使う SpriteRenderer（半透明の四角）")]
+    [Header("World Selection Rect")]
+    public Transform selectionRectRoot;
     public SpriteRenderer selectionRectRenderer;
 
     [Header("Selection Target")]
-    [Tooltip("ハイライト対象にするレイヤー（Machine など）。空なら全レイヤー")]
     public LayerMask selectableLayers = ~0;
 
     [Header("Highlight Colors")]
-    [Tooltip("選択されているオブジェクトにかける色")]
-    public Color highlightColor = new Color(1f, 0.9f, 0.4f, 1f); // 黄色っぽい
-    [Tooltip("元に戻すときの色（通常は白）")]
+    public Color highlightColor = new Color(1f, 0.9f, 0.4f, 1f);
     public Color defaultColor = Color.white;
 
     [Header("Rect Appearance")]
-    [Tooltip("選択長方形の色（水色＋半透明推奨）")]
     public Color rectColor = new Color(0.4f, 0.8f, 1f, 0.25f);
 
-    bool _isDragging = false;
+    [Header("Fixed Menu UI")]
+    public RectTransform menuRoot;
+    public Button blockButton;
+    public Button turretButton;
+    public Button machineButton;
+    public Button resourceButton;
+    public Button conveyorButton;
+
+    [Header("Tag Groups (multiple tags allowed)")]
+    public string[] blockTags;
+    public string[] turretTags;
+    public string[] machineTags;
+    public string[] resourceTags;
+    public string[] conveyorTags;
+
+    [Header("Tagged Color")]
+    public Color tagMatchedColor = new Color(0.7f, 1f, 0.7f, 1f);
+
+    [Header("Settings")]
+    public float minDragDistance = 0.2f;
+
+    bool _isDragging;
     Vector2 _startWorldPos;
     Vector2 _currentWorldPos;
 
-    // 直近でハイライトしているオブジェクト
     readonly List<GameObject> _lastHighlighted = new();
 
     void Awake()
     {
+        // シングルトンっぽく
+        if (Instance != null && Instance != this)
+        {
+            Destroy(this);
+            return;
+        }
+        Instance = this;
+
         if (!selectionRectRoot)
         {
-            Debug.LogError("[SelectionBoxDrawer] selectionRectRoot が設定されていません。");
+            Debug.LogError("[SelectionBoxDrawer] selectionRectRoot missing!");
             enabled = false;
             return;
         }
 
         if (!selectionRectRenderer)
-        {
             selectionRectRenderer = selectionRectRoot.GetComponentInChildren<SpriteRenderer>();
-        }
 
         if (!selectionRectRenderer)
         {
-            Debug.LogError("[SelectionBoxDrawer] selectionRectRenderer が見つかりません。SpriteRenderer を設定してください。");
+            Debug.LogError("[SelectionBoxDrawer] SpriteRenderer missing!");
             enabled = false;
             return;
         }
 
-        // 初期状態では枠を隠す
         selectionRectRoot.gameObject.SetActive(false);
         selectionRectRenderer.color = rectColor;
+
+        if (menuRoot)
+            menuRoot.gameObject.SetActive(false);
+
+        // ボタン登録
+        if (blockButton)
+            blockButton.onClick.AddListener(() => ApplyTagFilter(blockTags));
+        if (turretButton)
+            turretButton.onClick.AddListener(() => ApplyTagFilter(turretTags));
+        if (machineButton)
+            machineButton.onClick.AddListener(() => ApplyTagFilter(machineTags));
+        if (resourceButton)
+            resourceButton.onClick.AddListener(() => ApplyTagFilter(resourceTags));
+        if (conveyorButton)
+            conveyorButton.onClick.AddListener(() => ApplyTagFilter(conveyorTags));
     }
 
     void Update()
     {
         if (Camera.main == null) return;
+        if (IsPointerOverUI()) return;
 
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
         var mouse = Mouse.current;
-        var keyboard = Keyboard.current;
-        if (mouse == null || keyboard == null) return;
+        var kb = Keyboard.current;
+        if (mouse == null || kb == null) return;
 
-        bool shiftHeld = keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed;
-        Vector2 mouseScreen = mouse.position.ReadValue();
+        bool shift = kb.leftShiftKey.isPressed || kb.rightShiftKey.isPressed;
+        Vector2 scr = mouse.position.ReadValue();
+        Vector2 world2 = ScreenToWorld(scr);
 
-        // スクリーン → ワールド
-        Vector3 mouseWorld3 = ScreenToWorld(mouseScreen);
-        Vector2 mouseWorld = new Vector2(mouseWorld3.x, mouseWorld3.y);
+        if (shift && mouse.leftButton.wasPressedThisFrame)
+            BeginDrag(world2);
 
-        // --- ドラッグ開始 ---
-        if (shiftHeld && mouse.leftButton.wasPressedThisFrame)
-        {
-            _isDragging = true;
-            _startWorldPos = mouseWorld;
-            _currentWorldPos = mouseWorld;
-
-            selectionRectRoot.gameObject.SetActive(true);
-            UpdateRectTransform(_startWorldPos, _currentWorldPos);
-
-            ClearHighlight();
-        }
-
-        // --- ドラッグ終了 ---
         if (_isDragging && mouse.leftButton.wasReleasedThisFrame)
-        {
-            _isDragging = false;
-            selectionRectRoot.gameObject.SetActive(false);
+            EndDrag(world2);
 
-            // 最終位置で選択確定（ハイライトは残す）
-            UpdateHighlight(_startWorldPos, _currentWorldPos);
-        }
-
-        // --- ドラッグ中 ---
         if (_isDragging)
-        {
-            _currentWorldPos = mouseWorld;
-            UpdateRectTransform(_startWorldPos, _currentWorldPos);
-            UpdateHighlight(_startWorldPos, _currentWorldPos);
-        }
-
+            Dragging(world2);
 #else
-        // 旧 InputManager 用
-        bool shiftHeld = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
-        Vector3 mouseScreen3 = Input.mousePosition;
-        Vector2 mouseScreen = new Vector2(mouseScreen3.x, mouseScreen3.y);
+        bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+        Vector2 scr = Input.mousePosition;
+        Vector2 world2 = ScreenToWorld(scr);
 
-        Vector3 mouseWorld3 = ScreenToWorld(mouseScreen);
-        Vector2 mouseWorld = new Vector2(mouseWorld3.x, mouseWorld3.y);
-
-        if (shiftHeld && Input.GetMouseButtonDown(0))
-        {
-            _isDragging = true;
-            _startWorldPos = mouseWorld;
-            _currentWorldPos = mouseWorld;
-
-            selectionRectRoot.gameObject.SetActive(true);
-            UpdateRectTransform(_startWorldPos, _currentWorldPos);
-
-            ClearHighlight();
-        }
+        if (shift && Input.GetMouseButtonDown(0))
+            BeginDrag(world2);
 
         if (_isDragging && Input.GetMouseButtonUp(0))
-        {
-            _isDragging = false;
-            selectionRectRoot.gameObject.SetActive(false);
-
-            UpdateHighlight(_startWorldPos, _currentWorldPos);
-        }
+            EndDrag(world2);
 
         if (_isDragging)
-        {
-            _currentWorldPos = mouseWorld;
-            UpdateRectTransform(_startWorldPos, _currentWorldPos);
-            UpdateHighlight(_startWorldPos, _currentWorldPos);
-        }
+            Dragging(world2);
 #endif
     }
 
-    // ========================= ワールド座標変換 =========================
+    // ================= Drag operations =================
 
-    Vector3 ScreenToWorld(Vector2 screenPos)
+    void BeginDrag(Vector2 pos)
     {
-        var cam = Camera.main;
-        // 2Dオーソカメラ想定: z はカメラから原点までの距離
-        float z = -cam.transform.position.z;
-        return cam.ScreenToWorldPoint(new Vector3(screenPos.x, screenPos.y, z));
+        _isDragging = true;
+        _startWorldPos = pos;
+        _currentWorldPos = pos;
+
+        if (selectionRectRoot)
+        {
+            selectionRectRoot.gameObject.SetActive(true);
+            UpdateRectTransform(pos, pos);
+        }
+
+        ClearHighlight();
+        if (menuRoot)
+            menuRoot.gameObject.SetActive(false);
+
+        // ★ 選択開始時に建築モードを完全に止める
+        BuildPlacement.s_buildLocked = true;
     }
 
-    // ========================= 長方形の見た目更新（ワールド空間） =========================
-
-    void UpdateRectTransform(Vector2 start, Vector2 end)
+    void EndDrag(Vector2 pos)
     {
-        float minX = Mathf.Min(start.x, end.x);
-        float minY = Mathf.Min(start.y, end.y);
-        float maxX = Mathf.Max(start.x, end.x);
-        float maxY = Mathf.Max(start.y, end.y);
+        _isDragging = false;
+        _currentWorldPos = pos;
 
-        float width = Mathf.Max(0.0001f, maxX - minX);
-        float height = Mathf.Max(0.0001f, maxY - minY);
+        if (selectionRectRoot)
+            selectionRectRoot.gameObject.SetActive(false);
 
-        // 中心位置
-        Vector3 center = new Vector3(minX + width * 0.5f, minY + height * 0.5f, 0f);
+        float dist = Vector2.Distance(_startWorldPos, _currentWorldPos);
+        if (dist < minDragDistance)
+        {
+            // ほぼ動いていない → 何もしない
+            ClearHighlight();
+            HideMenuOnly();           // ロックは解除しない
+            return;
+        }
 
-        selectionRectRoot.position = center;
+        UpdateHighlight(_startWorldPos, _currentWorldPos);
+        ShowMenu();                   // メニュー表示中もロックは維持
+    }
 
-        // Sprite が「1ユニット四方」の大きさなら、そのまま scale = (width, height)
-        // もし違う場合はスプライトのサイズに応じて調整してください。
-        selectionRectRoot.localScale = new Vector3(width, height, 1f);
+    void Dragging(Vector2 pos)
+    {
+        _currentWorldPos = pos;
+        UpdateRectTransform(_startWorldPos, pos);
+        UpdateHighlight(_startWorldPos, pos);
+    }
 
-        // 色を毎フレーム念のため反映
+    // ================= UI / Rect =================
+
+    Vector2 ScreenToWorld(Vector2 screen)
+    {
+        var cam = Camera.main;
+        float z = -cam.transform.position.z;
+        Vector3 w = cam.ScreenToWorldPoint(new Vector3(screen.x, screen.y, z));
+        return new Vector2(w.x, w.y);
+    }
+
+    void UpdateRectTransform(Vector2 a, Vector2 b)
+    {
+        float minX = Mathf.Min(a.x, b.x);
+        float minY = Mathf.Min(a.y, b.y);
+        float maxX = Mathf.Max(a.x, b.x);
+        float maxY = Mathf.Max(a.y, b.y);
+
+        float w = maxX - minX;
+        float h = maxY - minY;
+
+        if (!selectionRectRoot) return;
+
+        selectionRectRoot.position = new Vector3(minX + w * 0.5f, minY + h * 0.5f, 0f);
+        selectionRectRoot.localScale = new Vector3(Mathf.Max(w, 0.0001f), Mathf.Max(h, 0.0001f), 1f);
         selectionRectRenderer.color = rectColor;
     }
 
-    // ========================= ハイライト処理 =========================
+    // ================= Highlight =================
 
-    void UpdateHighlight(Vector2 startWorld, Vector2 endWorld)
+    void UpdateHighlight(Vector2 a, Vector2 b)
     {
-        // 一度前のハイライトを全部解除
         ClearHighlight();
 
-        float minX = Mathf.Min(startWorld.x, endWorld.x);
-        float minY = Mathf.Min(startWorld.y, endWorld.y);
-        float maxX = Mathf.Max(startWorld.x, endWorld.x);
-        float maxY = Mathf.Max(startWorld.y, endWorld.y);
+        Vector2 min = new Vector2(Mathf.Min(a.x, b.x), Mathf.Min(a.y, b.y));
+        Vector2 max = new Vector2(Mathf.Max(a.x, b.x), Mathf.Max(a.y, b.y));
 
-        Vector2 a = new Vector2(minX, minY);
-        Vector2 b = new Vector2(maxX, maxY);
-
-        Collider2D[] hits = Physics2D.OverlapAreaAll(a, b, selectableLayers);
+        var hits = Physics2D.OverlapAreaAll(min, max, selectableLayers);
         if (hits == null || hits.Length == 0) return;
 
-        var uniqueObjects = new HashSet<GameObject>();
-
-        foreach (var h in hits)
+        foreach (var hit in hits)
         {
-            if (!h) continue;
+            if (!hit) continue;
+            GameObject go = hit.transform.gameObject;
 
-            // 「ブロック単位」で扱いたいので、まず SpriteRenderer を持つ親を探す
-            GameObject target = null;
-
-            var srParent = h.GetComponentInParent<SpriteRenderer>();
-            if (srParent != null)
+            if (!_lastHighlighted.Contains(go))
             {
-                target = srParent.gameObject;
+                Highlight(go);
+                _lastHighlighted.Add(go);
             }
-            else
-            {
-                // どうしても見つからなければ、そのコライダー自身を対象にする
-                target = h.gameObject;
-            }
-
-            if (!target) continue;
-            if (!uniqueObjects.Add(target)) continue;
-        }
-
-        foreach (var go in uniqueObjects)
-        {
-            HighlightObject(go);
-            _lastHighlighted.Add(go);
         }
     }
 
-    void HighlightObject(GameObject go)
+    void Highlight(GameObject go)
     {
-        if (!go) return;
-
-        // このオブジェクト配下の SpriteRenderer をすべてハイライト
-        var renderers = go.GetComponentsInChildren<SpriteRenderer>(true);
-        foreach (var r in renderers)
-        {
-            r.color = highlightColor;
-        }
+        var srs = go.GetComponentsInChildren<SpriteRenderer>(true);
+        foreach (var sr in srs)
+            sr.color = highlightColor;
     }
 
     void ClearHighlight()
     {
+        foreach (var go in _lastHighlighted)
+        {
+            if (!go) continue;
+            var srs = go.GetComponentsInChildren<SpriteRenderer>(true);
+            foreach (var sr in srs)
+                sr.color = defaultColor;
+        }
+        _lastHighlighted.Clear();
+    }
+
+    // ================= Menu =================
+
+    void ShowMenu()
+    {
+        if (!menuRoot) return;
+
+        if (_lastHighlighted.Count == 0)
+        {
+            HideMenuOnly();
+            return;
+        }
+
+        // 位置は固定。 anchoredPosition はいじらない
+        menuRoot.gameObject.SetActive(true);
+    }
+
+    /// <summary>
+    /// メニューだけ閉じる（建築ロックは触らない）
+    /// </summary>
+    void HideMenuOnly()
+    {
+        if (menuRoot)
+            menuRoot.gameObject.SetActive(false);
+    }
+
+    // ================= Tag Filtering =================
+
+    void ApplyTagFilter(string[] tags)
+    {
+        if (tags == null || tags.Length == 0) return;
         if (_lastHighlighted.Count == 0) return;
 
         foreach (var go in _lastHighlighted)
         {
             if (!go) continue;
+            bool match = HasAnyTag(go, tags);
 
-            var renderers = go.GetComponentsInChildren<SpriteRenderer>(true);
-            foreach (var r in renderers)
-            {
-                r.color = defaultColor;
-            }
+            var srs = go.GetComponentsInChildren<SpriteRenderer>(true);
+            foreach (var sr in srs)
+                sr.color = match ? tagMatchedColor : highlightColor;
         }
+    }
 
-        _lastHighlighted.Clear();
+    bool HasAnyTag(GameObject go, string[] tags)
+    {
+        foreach (var t in tags)
+        {
+            if (string.IsNullOrEmpty(t)) continue;
+            if (go.CompareTag(t)) return true;
+        }
+        return false;
+    }
+
+    // ================= UI Detection =================
+
+    bool IsPointerOverUI()
+    {
+        if (EventSystem.current == null) return false;
+        return EventSystem.current.IsPointerOverGameObject();
+    }
+
+    // ================= 外部からの「建築モード開始」通知 =================
+
+    /// <summary>
+    /// BuildBarUI などから「建築スタートするよ」と呼んでもらう。
+    /// メニュー＆ハイライト＆選択枠を消して、建築ロックを解除する。
+    /// </summary>
+    public static void NotifyBuildModeStartedFromOutside()
+    {
+        if (Instance == null) return;
+        Instance.OnBuildModeStarted();
+    }
+
+    void OnBuildModeStarted()
+    {
+        // ハイライトと選択枠を全部消す
+        ClearHighlight();
+
+        if (selectionRectRoot)
+            selectionRectRoot.gameObject.SetActive(false);
+
+        HideMenuOnly();
+
+        // ★ ここで初めて建築ロック解除 → 以降は通常通り建築モードが動く
+        BuildPlacement.s_buildLocked = false;
     }
 }
