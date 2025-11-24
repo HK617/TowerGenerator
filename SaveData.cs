@@ -50,6 +50,8 @@ public class DroneRuntimeData
     public float workProgress;   // 0〜1
     public float workTimer;      // ある程度元に戻す用
     public DroneTaskData task;   // いま持ってるタスク（nullのこともある）
+    // ★ 追加：ジョブ名（"Builder" / "Miner"）
+    public string job;
 }
 
 [Serializable]

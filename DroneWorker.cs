@@ -1,4 +1,6 @@
-using UnityEngine;
+﻿using UnityEngine;
+using System.Collections.Generic;
+using System.Text;
 
 public class DroneWorker : MonoBehaviour
 {
@@ -8,6 +10,20 @@ public class DroneWorker : MonoBehaviour
         MovingToTarget,
         Working
     }
+
+    public enum JobType
+    {
+        Builder,   // 建築・解体専用
+        Miner      // 採掘専用
+    }
+
+    [SerializeField]
+    JobType _currentJob = JobType.Builder;
+
+    public JobType CurrentJob => _currentJob;
+
+    [Header("Job設定")]
+    public JobType job = JobType.Builder;   // デフォルトは Builder
 
     [Header("Move")]
     public float speed = 6f;
@@ -23,6 +39,39 @@ public class DroneWorker : MonoBehaviour
 
     [Header("Enemy avoid")]
     public LayerMask enemyCheckMask;
+
+    [Header("Mining")]
+    [Tooltip("1回の採掘にかかる秒数")]
+    public float miningInterval = 3f;
+
+    [Tooltip("この採掘タスクで運べるアイテムの最大数")]
+    public int miningCarryCapacity = 20;   // ★ 追加
+
+    // 現在の採掘タスクでいくつ持っているか（タスク終了条件に使う）
+    int _currentCarryCount = 0;            // ★ 追加
+
+    // 採掘用タイマー
+    float _miningTimer = 0f;
+
+    // ドローンが今まで掘ってきたアイテム（種類→個数）
+    Dictionary<string, int> _minedItems = new Dictionary<string, int>();
+
+    public IReadOnlyDictionary<string, int> MinedItems => _minedItems;
+
+    // 1種類のアイテムに対する採掘統計
+    [System.Serializable]
+    public class MinedItemStat
+    {
+        public string scriptName;   // アイテムのスクリプト名（クラス名）
+        public string displayName;  // アイテム名（UI表示用, 日本語）
+        public int totalCount;      // 採掘総数
+    }
+
+    // key: scriptName（クラス名）
+    readonly Dictionary<string, MinedItemStat> _minedItemStats = new();
+
+    // 読み取り専用で外部に渡したい場合に使える
+    public IEnumerable<MinedItemStat> MinedItemStats => _minedItemStats.Values;
 
     [HideInInspector] public DroneBuildManager manager;
 
@@ -40,6 +89,81 @@ public class DroneWorker : MonoBehaviour
 
     public bool IsIdle => _state == DroneState.Idle;
 
+    /// <summary>
+    /// 今の Job 設定で、指定されたタスク種別を受けてよいか？
+    /// </summary>
+    public bool CanAcceptTask(DroneBuildManager.TaskKind kind)
+    {
+        switch (job)
+        {
+            case JobType.Builder:
+                // 建築・解体のみ
+                return kind == DroneBuildManager.TaskKind.BigBuild
+                    || kind == DroneBuildManager.TaskKind.FineBuild
+                    || kind == DroneBuildManager.TaskKind.BigDemolish
+                    || kind == DroneBuildManager.TaskKind.FineDemolish;
+
+            case JobType.Miner:
+                // 採掘のみ
+                return kind == DroneBuildManager.TaskKind.MineResource;
+
+            default:
+                return true;
+        }
+    }
+
+    /// <summary>
+    /// このドローンがアイテムを1つ採掘したときに呼ぶ
+    /// </summary>
+    /// <param name="itemScript">アイテムのスクリプト（Component）や ScriptableObject</param>
+    /// <param name="displayName">UI に出したい日本語名</param>
+    public void NotifyMinedItem(Object itemScript, string displayName)
+    {
+        if (itemScript == null && string.IsNullOrEmpty(displayName))
+            return;
+
+        // キーにはスクリプト名を使う（同じ種類をまとめる用）
+        string scriptName = (itemScript != null) ? itemScript.GetType().Name : displayName;
+
+        if (string.IsNullOrEmpty(displayName))
+        {
+            displayName = scriptName;
+        }
+
+        if (!_minedItemStats.TryGetValue(scriptName, out var stat))
+        {
+            stat = new MinedItemStat
+            {
+                scriptName = scriptName,
+                displayName = displayName,
+                totalCount = 0
+            };
+            _minedItemStats[scriptName] = stat;
+        }
+
+        stat.totalCount++;
+    }
+
+    /// <summary>
+    /// 詳細メニュー用：日本語名と合計数だけをまとめた文字列を返す
+    /// </summary>
+    public string GetMinedItemSummary()
+    {
+        if (_minedItemStats.Count == 0)
+            return "";
+
+        var sb = new StringBuilder();
+        sb.AppendLine("採掘ログ:");
+
+        foreach (var stat in _minedItemStats.Values)
+        {
+            // 例: "鉄鉱石 x 12"
+            sb.AppendLine($"{stat.displayName} x {stat.totalCount}");
+        }
+
+        return sb.ToString();
+    }
+
     public void SetTask(DroneBuildManager.BuildTask task)
     {
         _task = task;
@@ -48,6 +172,10 @@ public class DroneWorker : MonoBehaviour
         _workProgress = 0f;
         _moveTimer = 0f;
         _workTimer = 0f;
+
+        // ★ 採掘関連カウンタもリセット
+        _miningTimer = 0f;
+        _currentCarryCount = 0;
     }
 
     void Update()
@@ -116,6 +244,22 @@ public class DroneWorker : MonoBehaviour
 
     void TickWork()
     {
+        // ★ タスクが無いなら安全に Idle に戻す
+        if (_task == null)
+        {
+            _state = DroneState.Idle;
+            _workProgress = 0f;
+            return;
+        }
+
+        // ★ 採掘タスクの場合は、専用の処理に切り替える
+        if (_task.kind == DroneBuildManager.TaskKind.MineResource)
+        {
+            TickMiningWork();
+            return;
+        }
+
+        // ここから下は従来どおり「一回きりの建築 / 解体」タスク
         _workTimer += Time.deltaTime;
 
         float wt = Mathf.Max(0.01f, workTime);
@@ -139,22 +283,126 @@ public class DroneWorker : MonoBehaviour
         }
     }
 
-    // ===== �������烍�[�h�p =====
+    // MineResource タスク専用の「掘り続ける」処理
+    void TickMiningWork()
+    {
+        // ターゲット Resource
+        var marker = _task.resourceMarker;
+        if (marker == null)
+        {
+            // 採掘対象が消えたらタスク終了して Idle に戻る
+            manager?.NotifyDroneFinished(this, _task, false);
+            _task = null;
+            _state = DroneState.Idle;
+            _workProgress = 0f;
+            _miningTimer = 0f;
+            _currentCarryCount = 0;
+            return;
+        }
+
+        // すでに保有上限に達しているなら、これ以上掘らずタスク終了
+        if (miningCarryCapacity > 0 && _currentCarryCount >= miningCarryCapacity)
+        {
+            manager?.NotifyDroneFinished(this, _task, true);
+            _task = null;
+            _state = DroneState.Idle;
+            _workProgress = 0f;
+            _miningTimer = 0f;
+            _currentCarryCount = 0;
+            return;
+        }
+
+        // 一定時間ごとに「1回採掘する」
+        float interval = Mathf.Max(0.1f, miningInterval);
+        _miningTimer += Time.deltaTime;
+
+        if (_miningTimer >= interval)
+        {
+            _miningTimer = 0f;
+
+            // Resource の種類名を決める
+            string displayName = "資源";
+            if (marker.def != null && !string.IsNullOrEmpty(marker.def.displayName))
+            {
+                displayName = marker.def.displayName;
+            }
+
+            // 内部カウント（日本語名→個数）
+            int cur;
+            if (!_minedItems.TryGetValue(displayName, out cur))
+                cur = 0;
+            _minedItems[displayName] = cur + 1;
+
+            // 採掘統計（スクリプト + 日本語名）
+            NotifyMinedItem(marker.def, displayName);
+
+            // このタスクで持っている数を増やす
+            _currentCarryCount++;
+
+            Debug.Log($"[DroneWorker] {name} mined {displayName}. TaskCarry = {_currentCarryCount}");
+        }
+
+        // プログレスバー用（0〜1）：保有数 / 上限
+        if (miningCarryCapacity > 0)
+            _workProgress = Mathf.Clamp01((float)_currentCarryCount / miningCarryCapacity);
+        else
+            _workProgress = 0f;
+
+        // 上限に達したらタスク終了
+        if (miningCarryCapacity > 0 && _currentCarryCount >= miningCarryCapacity)
+        {
+            manager?.NotifyDroneFinished(this, _task, true);
+            _task = null;
+            _state = DroneState.Idle;
+            _workProgress = 0f;
+            _miningTimer = 0f;
+            _currentCarryCount = 0;
+        }
+    }
+
+    public string GetMiningSummaryString()
+    {
+        if (_minedItems == null || _minedItems.Count == 0)
+            return "";
+
+        var sb = new StringBuilder();
+        foreach (var kv in _minedItems)
+        {
+            // 例: "鉄鉱石: 12"
+            sb.AppendLine($"{kv.Key}: {kv.Value}");
+        }
+        return sb.ToString();
+    }
+
+    // ===== ここからロード用 =====
     public void RestoreFromSave(
         DroneRuntimeData data,
         BuildPlacement placement,
         System.Func<string, BuildingDef> defResolver,
         DroneBuildManager mgr)
     {
-        // �ʒu��߂�
+        // 位置を戻す
         transform.position = data.position;
+        // ★ Job 復元
+        if (!string.IsNullOrEmpty(data.job))
+        {
+            if (System.Enum.TryParse<JobType>(data.job, out var j))
+                _currentJob = j;
+            else
+                _currentJob = JobType.Builder;
+        }
+        else
+        {
+            _currentJob = JobType.Builder;
+        }
+
         manager = mgr;
 
-        // ��Ԃ𕶎��񂩂�
+        // 状態を文字列から
         if (!System.Enum.TryParse<DroneState>(data.state, out var st))
             st = DroneState.Idle;
 
-        // �^�X�N�������Ȃ�Idle��OK
+        // タスクが無いならIdleでOK
         if (data.task == null)
         {
             _task = null;
@@ -164,17 +412,17 @@ public class DroneWorker : MonoBehaviour
             return;
         }
 
-        // �^�X�N�𕜌��iBuildPlacement���ŃS�[�X�g�����j
+        // タスクを復元（BuildPlacement側でゴーストを作る）
         var def = defResolver != null ? defResolver(data.task.defName) : null;
         GameObject ghost = null;
         if (data.task.ghost && def != null && placement != null)
         {
-            // "FineBuild" / "FineDemolish" �̂Ƃ����� fine = true
+            // "FineBuild" / "FineDemolish" のときだけ fine = true
             bool fine = (data.task.kind == "FineBuild" || data.task.kind == "FineDemolish");
             ghost = placement.CreateGhostForDef(def, data.task.worldPos, fine);
         }
 
-        // kind �𕶎��񂩂� enum �ɕ���
+        // kind を文字列から enum に復元
         DroneBuildManager.TaskKind kindEnum = DroneBuildManager.TaskKind.BigBuild;
         switch (data.task.kind)
         {
@@ -199,14 +447,30 @@ public class DroneWorker : MonoBehaviour
         _target = task.worldPos;
         _state = st;
 
-        // ��Ɠr������ĊJ
+        // 作業途中から再開
         _workProgress = Mathf.Clamp01(data.workProgress);
         _workTimer = data.workTimer;
 
-        // �����uMoving�ŏI����Ă��v�ꍇ�AMoving�Ƃ��čĊJ
+        // もし「Movingで終わってた」場合、Movingとして再開
         if (_state == DroneState.MovingToTarget)
         {
             _moveTimer = 0f;
         }
+    }
+    public void SetJob(JobType newJob)
+    {
+        if (_currentJob == newJob)
+            return;
+
+        // Miner → Builder 変更時は採掘中断
+        if (newJob == JobType.Builder)
+        {
+            _task = null;
+            _state = DroneState.Idle;
+            _miningTimer = 0f;
+            _currentCarryCount = 0;
+        }
+
+        _currentJob = newJob;
     }
 }

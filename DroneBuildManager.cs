@@ -31,7 +31,8 @@ public class DroneBuildManager : MonoBehaviour
         BigBuild,
         FineBuild,
         BigDemolish,
-        FineDemolish
+        FineDemolish,
+        MineResource,   // ★ 追加
     }
 
     [Serializable]
@@ -47,6 +48,9 @@ public class DroneBuildManager : MonoBehaviour
         public Vector2Int fineCell;
 
         public GameObject targetToDemolish;  // ★ 解体対象
+
+        // ★ 追加：採掘対象の Resource
+        public ResourceMarker resourceMarker;
     }
 
     // 旧コード互換
@@ -145,18 +149,36 @@ public class DroneBuildManager : MonoBehaviour
 
     void TryDispatchTasks()
     {
-        if (_queue.Count == 0) return;
+        if (_drones.Count == 0 || _queue.Count == 0)
+            return;
 
-        foreach (var drone in _drones)
+        int loopGuard = _queue.Count; // 無限ループ防止
+
+        while (_queue.Count > 0 && loopGuard-- > 0)
         {
-            if (!drone.IsIdle) continue;
-            if (_queue.Count == 0) break;
-
             var task = _queue.Dequeue();
-            drone.SetTask(task);
-        }
+            bool assigned = false;
 
-        NotifyUI();
+            foreach (var worker in _drones)
+            {
+                if (!worker.IsIdle)
+                    continue;
+
+                // ★ ここで Job に合うかチェック
+                if (!worker.CanAcceptTask(task.kind))
+                    continue;
+
+                worker.SetTask(task);
+                assigned = true;
+                break;
+            }
+
+            // 誰にも渡せなかったタスクはキューの末尾に戻す
+            if (!assigned)
+            {
+                _queue.Enqueue(task);
+            }
+        }
     }
 
     public void EnqueueBigDemolish(BuildPlacement placer, Vector3Int cell, GameObject target)
@@ -183,6 +205,30 @@ public class DroneBuildManager : MonoBehaviour
             targetToDemolish = target
         };
         EnqueueTask(t);
+    }
+
+    // ★ 採掘タスクだけキューから全部消す
+    public void ClearAllMiningReservations()
+    {
+        if (_queue.Count == 0) return;
+
+        var tmp = new Queue<BuildTask>();
+
+        while (_queue.Count > 0)
+        {
+            var t = _queue.Dequeue();
+
+            // 採掘以外だけ残す
+            if (t.kind != TaskKind.MineResource)
+                tmp.Enqueue(t);
+        }
+
+        while (tmp.Count > 0)
+            _queue.Enqueue(tmp.Dequeue());
+
+        // UI とタスク配布を更新
+        TryDispatchTasks();
+        NotifyUI();
     }
 
     // ドローンから「終わった」と言われたとき
@@ -228,7 +274,30 @@ public class DroneBuildManager : MonoBehaviour
             case TaskKind.FineDemolish:
                 task.placer?.FinalizeFineDemolish(task.fineCell, task.targetToDemolish);
                 break;
+
+            // ★ 追加：採掘完了時の処理
+            case TaskKind.MineResource:
+                if (task.resourceMarker != null)
+                {
+                    // ここで ResourceMarker に「ドリルのような採掘開始」を通知
+                    task.resourceMarker.StartDroneMining();   // ← このメソッドを ResourceMarker に実装
+                }
+                break;
         }
+    }
+
+    public void EnqueueResourceMining(ResourceMarker marker, Vector3 targetPos)
+    {
+        if (marker == null) return;
+
+        var t = new BuildTask
+        {
+            kind = TaskKind.MineResource,
+            resourceMarker = marker,
+            worldPos = targetPos   // ★ ブロックの位置をそのまま使う
+        };
+
+        EnqueueTask(t);
     }
 
     // =========================
@@ -301,13 +370,19 @@ public class DroneBuildManager : MonoBehaviour
             data.state = d.State.ToString();
             data.workProgress = d.CurrentProgress01;
             data.workTimer = d.SavedWorkTimer;
+
+            // ★ ここを追加（プロパティ名は実プロジェクトに合わせて）
+            data.job = d.CurrentJob.ToString();   // ← 例：DroneWorker に CurrentJob プロパティを用意
+
             var cur = d.CurrentTask;
             if (cur != null)
                 data.task = ToTaskData(cur);
+
             list.Add(data);
         }
         return list;
     }
+
 
     DroneTaskData ToTaskData(BuildTask t)
     {

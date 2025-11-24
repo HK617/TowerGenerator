@@ -1856,4 +1856,20 @@ public class BuildPlacement : MonoBehaviour
 
         return go;
     }
+    // =========================================================
+    // Resource 採掘用ヘルパー
+    // =========================================================
+
+    /// <summary>
+    /// 指定したワールド座標が属する Fine セルに
+    /// 何か建物（ゴーストを含む）が置かれているか？
+    /// </summary>
+    public bool HasBuildingOnFineCellAtWorldPos(Vector3 worldPos)
+    {
+        if (!useFineGrid) return false;
+        if (fineCellSize <= 0f) return false;
+
+        Vector2Int fcell = WorldToFineCell(worldPos, fineCellSize);
+        return _placedFine.ContainsKey(fcell);
+    }
 }

@@ -215,4 +215,17 @@ public class ResourceMarker : MonoBehaviour
             go.tag = "ResourceBlock";   // Drill判定用タグ
         }
     }
+
+    //----------------------------------
+    // --- ドローン採掘 ---
+    //----------------------------------
+    public void StartDroneMining()
+    {
+        Debug.Log($"[ResourceMarker] Drone mining started at {transform.position}");
+
+        // ★ ここに実際の採掘開始処理を書く（アイテム生成、進行度開始など）
+        // 例：
+        // GetComponent<DrillBehaviour>()?.StartMiningByDrone();
+    }
+
 }

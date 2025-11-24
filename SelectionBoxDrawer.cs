@@ -51,6 +51,14 @@ public class SelectionBoxDrawer : MonoBehaviour
     public Button resourceButton;
     public Button conveyorButton;
 
+    [Header("Resource Mining Icon")]
+    [Tooltip("Resource ブロックに付ける採掘アイコン")]
+    public Sprite resourceMiningIconSprite;
+    [Tooltip("採掘アイコンのスケール")]
+    public float resourceMiningIconScale = 1f;
+    [Tooltip("採掘アイコンのYオフセット（ブロック中心からの高さ）")]
+    public float resourceMiningIconYOffset = 0.6f;
+
     [Header("Detail Panel (menu lower half)")]
     [Tooltip("メニューパネルの下半分に置く詳細メニューのルート")]
     public RectTransform detailPanelRoot;
@@ -103,6 +111,17 @@ public class SelectionBoxDrawer : MonoBehaviour
 
     // 現在選択中カテゴリに対応するタグ群（Block / Turret など）
     string[] _currentCategoryTags;
+
+    // 詳細メニューの Delete ボタンが「削除モード」か「採掘モード」か
+    enum DetailMode
+    {
+        Demolish,
+        Mining
+    }
+    DetailMode _detailMode = DetailMode.Demolish;
+
+    // Delete/採掘ボタンのラベル
+    TMPro.TMP_Text _detailDeleteButtonLabel;
 
     void Awake()
     {
@@ -181,6 +200,9 @@ public class SelectionBoxDrawer : MonoBehaviour
 
         if (detailDeleteCancelButton)
             detailDeleteCancelButton.onClick.AddListener(OnDetailDeleteCancelClicked);
+
+        if (detailDeleteButton)
+            _detailDeleteButtonLabel = detailDeleteButton.GetComponentInChildren<TMPro.TMP_Text>(true);
     }
 
     void Update()
@@ -396,8 +418,17 @@ public class SelectionBoxDrawer : MonoBehaviour
 
     void OnCategoryButtonPressed(string categoryName, string[] tags, Button sourceButton)
     {
+        // ★ 他の項目が押されたときは採掘アイコンをキャンセル
+        ClearMiningIconsFromCurrentSelection();
+
         _currentCategoryButton = sourceButton;
         _currentCategoryTags = tags;
+
+        // ★ Resource カテゴリだけ「採掘モード」、それ以外は「削除モード」
+        if (sourceButton == resourceButton)
+            _detailMode = DetailMode.Mining;
+        else
+            _detailMode = DetailMode.Demolish;
 
         // Delete 確定 UI はカテゴリ切り替えで一旦リセット
         HideDeleteConfirmUI();
@@ -415,6 +446,24 @@ public class SelectionBoxDrawer : MonoBehaviour
         ApplyTagFilter(tags);
         // 詳細メニュー表示
         ShowDetailPanel(categoryName);
+
+        // ★ モードに応じてボタン表示・テキスト更新
+        UpdateDetailButtonsForCurrentMode();
+    }
+
+    /// <summary>
+    /// 現在のモード（削除 or 採掘）に応じて、詳細ボタンの表示を更新する
+    /// </summary>
+    void UpdateDetailButtonsForCurrentMode()
+    {
+        if (_detailDeleteButtonLabel != null)
+        {
+            _detailDeleteButtonLabel.text =
+                (_detailMode == DetailMode.Mining) ? "Mining" : "Remove";
+        }
+
+        // モードが変わったタイミングでは、確定/キャンセルは一度隠す
+        HideDeleteConfirmUI();
     }
 
     void ShowDetailPanel(string categoryName)
@@ -440,6 +489,9 @@ public class SelectionBoxDrawer : MonoBehaviour
         if (detailPanelRoot)
             detailPanelRoot.gameObject.SetActive(false);
 
+        // ★ 採掘アイコンもキャンセル
+        ClearMiningIconsFromCurrentSelection();
+
         // Delete 確定 UI をリセット
         HideDeleteConfirmUI();
 
@@ -449,6 +501,9 @@ public class SelectionBoxDrawer : MonoBehaviour
         // ボタンの選択を解除＆色も通常に
         DeselectCategoryButton();
         // 建築ロックは解除しない（ユーザーが建築モードを開始するときに解除）
+
+        // ★ ボタンラベルなどもモードに合わせてリセット
+        UpdateDetailButtonsForCurrentMode();
     }
 
     /// <summary>
@@ -458,6 +513,29 @@ public class SelectionBoxDrawer : MonoBehaviour
     /// </summary>
     void OnDetailDeleteClicked()
     {
+        // ★ Resource カテゴリのときは「採掘」モード
+        if (_detailMode == DetailMode.Mining)
+        {
+            bool miningAny = ApplyMiningToCurrentResources();
+
+            // アイコンを付けた Resource が 1つ以上あれば「確定／キャンセル」を表示
+            if (miningAny)
+            {
+                if (detailDeleteConfirmButton)
+                    detailDeleteConfirmButton.gameObject.SetActive(true);
+                if (detailDeleteCancelButton)
+                    detailDeleteCancelButton.gameObject.SetActive(true);
+            }
+            else
+            {
+                // 何もなければ消しておく
+                HideDeleteConfirmUI();
+            }
+
+            return;
+        }
+
+        // ここから下は従来どおり「削除予約」モード
         if (buildPlacement == null)
         {
             Debug.LogWarning("[SelectionBoxDrawer] BuildPlacement が設定されていません。Delete ボタンは無効です。");
@@ -508,14 +586,21 @@ public class SelectionBoxDrawer : MonoBehaviour
     /// </summary>
     void OnDetailDeleteConfirmClicked()
     {
+        // ★ まず採掘モードかどうかを見る
+        if (_detailMode == DetailMode.Mining)
+        {
+            StartMiningJobsForCurrentIcons();
+            HideDeleteConfirmUI();
+            return;
+        }
+
+        // ここから下は従来どおり「削除確定」
         if (buildPlacement == null)
         {
             Debug.LogWarning("[SelectionBoxDrawer] BuildPlacement が設定されていません。確定ボタンは無効です。");
             return;
         }
 
-        // StartPlannedDemolitions は s_buildLocked を見るので、
-        // 一時的にロックを解除してから呼び、終わったら元に戻す。
         bool prevLock = BuildPlacement.s_buildLocked;
         BuildPlacement.s_buildLocked = false;
         buildPlacement.StartPlannedDemolitions();
@@ -531,6 +616,15 @@ public class SelectionBoxDrawer : MonoBehaviour
     /// </summary>
     void OnDetailDeleteCancelClicked()
     {
+        // ★ 採掘モードならアイコンだけキャンセル
+        if (_detailMode == DetailMode.Mining)
+        {
+            ClearMiningIconsFromCurrentSelection();
+            HideDeleteConfirmUI();
+            return;
+        }
+
+        // 削除モードなら従来どおり解体予約を全消し
         if (buildPlacement != null)
         {
             buildPlacement.ClearAllPlannedDemolitions();
@@ -650,6 +744,157 @@ public class SelectionBoxDrawer : MonoBehaviour
         }
 
         return false;
+    }
+
+    // 現在の選択範囲に付いている採掘アイコンをすべて消す
+    void ClearMiningIconsFromCurrentSelection()
+    {
+        foreach (var go in _lastHighlighted)
+        {
+            if (!go) continue;
+            RemoveMiningIcon(go);
+        }
+    }
+
+    // ========================================================
+    // Resource Mining Icon
+    // ========================================================
+
+    void RemoveMiningIcon(GameObject target)
+    {
+        if (target == null) return;
+
+        var root = target.transform.Find("MiningIconRoot");
+        if (root != null)
+        {
+            Destroy(root.gameObject);
+        }
+    }
+
+    void AddMiningIcon(GameObject target)
+    {
+        if (target == null) return;
+        if (resourceMiningIconSprite == null)
+        {
+            Debug.LogWarning("[SelectionBoxDrawer] resourceMiningIconSprite が設定されていません。");
+            return;
+        }
+
+        // ★ ここから修正：その Fine セルに建物があるならアイコンを付けない
+        if (buildPlacement != null &&
+            buildPlacement.HasBuildingOnFineCellAtWorldPos(target.transform.position))
+        {
+            // この Resource の細かいセルは既に建物に占有されている
+            return;
+        }
+        // ★ ここまで
+
+        // 既存を消してリセット
+        var oldRoot = target.transform.Find("MiningIconRoot");
+        if (oldRoot != null)
+            Destroy(oldRoot.gameObject);
+
+        GameObject root = new GameObject("MiningIconRoot");
+        root.transform.SetParent(target.transform, false);
+        root.transform.localPosition = Vector3.zero;
+
+        GameObject icon = new GameObject("MiningIcon");
+        icon.transform.SetParent(root.transform, false);
+        icon.transform.localPosition = new Vector3(0f, resourceMiningIconYOffset, 0f);
+
+        var sr = icon.AddComponent<SpriteRenderer>();
+        sr.sprite = resourceMiningIconSprite;
+        sr.sortingOrder = 998;
+
+        // 親スケールの逆数でアイコンサイズを一定に保つ
+        var parentScale = target.transform.lossyScale;
+        float invX = (parentScale.x != 0f) ? 1f / parentScale.x : 1f;
+        float invY = (parentScale.y != 0f) ? 1f / parentScale.y : 1f;
+
+        icon.transform.localScale = new Vector3(invX, invY, 1f) * resourceMiningIconScale;
+    }
+
+    /// <summary>
+    /// 現在の選択範囲の中で MiningIconRoot が付いている Resource に
+    /// ドローンの採掘ジョブを投げる
+    /// </summary>
+    void StartMiningJobsForCurrentIcons()
+    {
+        var manager = FindObjectOfType<DroneBuildManager>();
+        if (manager == null)
+        {
+            Debug.LogWarning("[SelectionBoxDrawer] DroneBuildManager がシーンにありません。");
+            return;
+        }
+
+        // ★ ここを追加：古い採掘予約をすべてリセット
+        manager.ClearAllMiningReservations();
+
+        foreach (var go in _lastHighlighted)
+        {
+            if (!go) continue;
+
+            var root = go.transform.Find("MiningIconRoot");
+            if (root == null) continue;
+
+            var resource = go.GetComponentInParent<ResourceMarker>();
+            if (resource == null) continue;
+
+            Vector3 targetPos = go.transform.position;
+
+            manager.EnqueueResourceMining(resource, targetPos);
+        }
+
+        ClearMiningIconsFromCurrentSelection();
+    }
+
+    // ========================================================
+    // Resource Mining Icon
+    // ========================================================
+
+    /// <summary>
+    /// 現在の範囲選択＋Resource カテゴリに対して「採掘アイコン」をトグルする
+    /// </summary>
+    bool ApplyMiningToCurrentResources()
+    {
+        if (_lastHighlighted.Count == 0)
+            return false;
+
+        if (_currentCategoryTags == null || _currentCategoryTags.Length == 0)
+        {
+            Debug.LogWarning("[SelectionBoxDrawer] カテゴリが選択されていないため、採掘アイコンを付けられません。");
+            return false;
+        }
+
+        bool any = false;
+
+        foreach (var go in _lastHighlighted)
+        {
+            if (!go) continue;
+
+            bool match = HasAnyTagInHierarchy(go, _currentCategoryTags);
+            if (!match) continue;
+
+            // すでに MiningIcon が付いていれば外し、なければ付ける（トグル）
+            var existingRoot = go.transform.Find("MiningIconRoot");
+            if (existingRoot != null)
+            {
+                RemoveMiningIcon(go);
+            }
+            else
+            {
+                AddMiningIcon(go);
+            }
+
+            any = true;
+        }
+
+        if (!any)
+        {
+            Debug.Log("[SelectionBoxDrawer] Resource カテゴリに合致する対象がありません。");
+        }
+
+        return any;
     }
 
     // ========================================================
