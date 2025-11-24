@@ -21,7 +21,9 @@ using UnityEngine.InputSystem;
 ///   - 選択中ボタンだけ色を変える
 /// ・下部の詳細パネル
 ///   - ✕ボタン：詳細パネルを閉じる＋カテゴリボタン選択解除＋色を普通の選択色に戻す
-///   - Deleteボタン：**現在選択中のカテゴリに合致する建築物だけ**を BuildPlacement に解体予約させる
+///   - Deleteボタン：現在のカテゴリの建物に「削除予約アイコン」を付ける
+///   - 確定ボタン：BuildPlacement.StartPlannedDemolitions() を呼んでドローン解体開始
+///   - キャンセルボタン：すべての削除予約をキャンセル（アイコンも消える）
 /// </summary>
 public class SelectionBoxDrawer : MonoBehaviour
 {
@@ -56,8 +58,12 @@ public class SelectionBoxDrawer : MonoBehaviour
     public TMPro.TMP_Text detailTitleText;
     [Tooltip("詳細メニューを閉じるボタン（✕）")]
     public Button detailCloseButton;
-    [Tooltip("選択している建物を削除予約するボタン")]
+    [Tooltip("選択している建物に削除予約を付けるボタン")]
     public Button detailDeleteButton;
+    [Tooltip("削除予約の『確定』ボタン（ドローン解体開始）")]
+    public Button detailDeleteConfirmButton;
+    [Tooltip("削除予約の『キャンセル』ボタン（予約全部クリア）")]
+    public Button detailDeleteCancelButton;
 
     [Header("Tag Groups (multiple tags allowed)")]
     public string[] blockTags;
@@ -77,7 +83,7 @@ public class SelectionBoxDrawer : MonoBehaviour
     public Color categoryButtonSelectedColor = new Color(1f, 0.9f, 0.5f, 1f);
 
     [Header("Build System")]
-    [Tooltip("削除予約を投げる先の BuildPlacement を指定してください")]
+    [Tooltip("削除予約・解体開始を投げる先の BuildPlacement を指定してください")]
     public BuildPlacement buildPlacement;
 
     [Header("Settings")]
@@ -87,13 +93,15 @@ public class SelectionBoxDrawer : MonoBehaviour
     Vector2 _startWorldPos;
     Vector2 _currentWorldPos;
 
+    // 直近の範囲選択で拾われたオブジェクト
     readonly List<GameObject> _lastHighlighted = new();
 
     // 直近で押されたカテゴリボタン
     Button _currentCategoryButton;
     // 全カテゴリボタンの配列（色をまとめて変える用）
     Button[] _categoryButtons;
-    // 現在選択中カテゴリのタグ配列（Delete 用）
+
+    // 現在選択中カテゴリに対応するタグ群（Block / Turret など）
     string[] _currentCategoryTags;
 
     void Awake()
@@ -132,6 +140,12 @@ public class SelectionBoxDrawer : MonoBehaviour
         if (detailPanelRoot)
             detailPanelRoot.gameObject.SetActive(false);
 
+        // Delete 確定 / キャンセルボタンは初期状態では非表示
+        if (detailDeleteConfirmButton)
+            detailDeleteConfirmButton.gameObject.SetActive(false);
+        if (detailDeleteCancelButton)
+            detailDeleteCancelButton.gameObject.SetActive(false);
+
         // カテゴリボタン配列を作成
         var list = new List<Button>();
         if (blockButton) list.Add(blockButton);
@@ -161,6 +175,12 @@ public class SelectionBoxDrawer : MonoBehaviour
 
         if (detailDeleteButton)
             detailDeleteButton.onClick.AddListener(OnDetailDeleteClicked);
+
+        if (detailDeleteConfirmButton)
+            detailDeleteConfirmButton.onClick.AddListener(OnDetailDeleteConfirmClicked);
+
+        if (detailDeleteCancelButton)
+            detailDeleteCancelButton.onClick.AddListener(OnDetailDeleteCancelClicked);
     }
 
     void Update()
@@ -218,7 +238,7 @@ public class SelectionBoxDrawer : MonoBehaviour
         }
 
         ClearHighlight();
-        HideMenuOnly(); // メニューと詳細、ボタン選択もクリア
+        HideMenuOnly(); // メニューと詳細、ボタン選択・Delete確定UIもクリア
 
         // 選択開始時に建築モードを完全に止める
         BuildPlacement.s_buildLocked = true;
@@ -370,13 +390,17 @@ public class SelectionBoxDrawer : MonoBehaviour
         if (detailPanelRoot)
             detailPanelRoot.gameObject.SetActive(false);
 
+        HideDeleteConfirmUI();
         DeselectCategoryButton();
     }
 
     void OnCategoryButtonPressed(string categoryName, string[] tags, Button sourceButton)
     {
         _currentCategoryButton = sourceButton;
-        _currentCategoryTags = tags;  // ← このカテゴリのタグを記録（Delete 用）
+        _currentCategoryTags = tags;
+
+        // Delete 確定 UI はカテゴリ切り替えで一旦リセット
+        HideDeleteConfirmUI();
 
         // EventSystem 的にもこのボタンを「選択中」にしておく
         if (EventSystem.current != null)
@@ -416,6 +440,9 @@ public class SelectionBoxDrawer : MonoBehaviour
         if (detailPanelRoot)
             detailPanelRoot.gameObject.SetActive(false);
 
+        // Delete 確定 UI をリセット
+        HideDeleteConfirmUI();
+
         // タグ色分けを解除して、選択中ハイライト色に戻す
         RestorePlainHighlight();
 
@@ -425,9 +452,9 @@ public class SelectionBoxDrawer : MonoBehaviour
     }
 
     /// <summary>
-    /// 詳細メニュー内の Delete ボタンが押されたとき：
-    /// 「現在選択中のカテゴリのタグに合致する」建物だけを
-    /// BuildPlacement に解体予約させる。
+    /// 詳細メニュー内の Delete ボタン：
+    /// 現在のカテゴリタグに合致するオブジェクトに「削除予約」を付ける。
+    /// （BuildPlacement.EnsureDemolitionPlannedForObject を呼ぶ）
     /// </summary>
     void OnDetailDeleteClicked()
     {
@@ -442,23 +469,85 @@ public class SelectionBoxDrawer : MonoBehaviour
 
         if (_currentCategoryTags == null || _currentCategoryTags.Length == 0)
         {
-            // 理論上、カテゴリボタンを押さないと詳細メニューは開かない想定
-            Debug.LogWarning("[SelectionBoxDrawer] 現在選択中のカテゴリがありません。Delete は何もしません。");
+            Debug.LogWarning("[SelectionBoxDrawer] カテゴリが選択されていないため、削除予約を付けられません。");
             return;
         }
+
+        bool any = false;
 
         foreach (var go in _lastHighlighted)
         {
             if (!go) continue;
 
-            // 現在のカテゴリのタグに合致するものだけ削除予約
-            if (HasAnyTagInHierarchy(go, _currentCategoryTags))
+            bool match = HasAnyTagInHierarchy(go, _currentCategoryTags);
+            if (match)
             {
                 buildPlacement.EnsureDemolitionPlannedForObject(go);
+                any = true;
             }
         }
 
-        // 解体アイコンは BuildPlacement 側のメソッド内で付くのでここでは何もしない。
+        if (!any)
+        {
+            Debug.Log("[SelectionBoxDrawer] 現在のカテゴリに合致する削除対象がありません。");
+            HideDeleteConfirmUI();
+            return;
+        }
+
+        // 削除予約が1つ以上付いたので、「確定」「キャンセル」を表示
+        if (detailDeleteConfirmButton)
+            detailDeleteConfirmButton.gameObject.SetActive(true);
+        if (detailDeleteCancelButton)
+            detailDeleteCancelButton.gameObject.SetActive(true);
+    }
+
+    /// <summary>
+    /// 「確定」ボタン：
+    /// BuildPlacement.StartPlannedDemolitions() を呼んで
+    /// 削除予約中の建物に対してドローン解体を開始する。
+    /// </summary>
+    void OnDetailDeleteConfirmClicked()
+    {
+        if (buildPlacement == null)
+        {
+            Debug.LogWarning("[SelectionBoxDrawer] BuildPlacement が設定されていません。確定ボタンは無効です。");
+            return;
+        }
+
+        // StartPlannedDemolitions は s_buildLocked を見るので、
+        // 一時的にロックを解除してから呼び、終わったら元に戻す。
+        bool prevLock = BuildPlacement.s_buildLocked;
+        BuildPlacement.s_buildLocked = false;
+        buildPlacement.StartPlannedDemolitions();
+        BuildPlacement.s_buildLocked = prevLock;
+
+        HideDeleteConfirmUI();
+    }
+
+    /// <summary>
+    /// 「キャンセル」ボタン：
+    /// BuildPlacement に入っている削除予約を全部消す。
+    /// （右ドラッグなどで予約していたものも含めて全てクリア）
+    /// </summary>
+    void OnDetailDeleteCancelClicked()
+    {
+        if (buildPlacement != null)
+        {
+            buildPlacement.ClearAllPlannedDemolitions();
+        }
+
+        HideDeleteConfirmUI();
+    }
+
+    /// <summary>
+    /// Delete 確定 / キャンセル UI の非表示
+    /// </summary>
+    void HideDeleteConfirmUI()
+    {
+        if (detailDeleteConfirmButton)
+            detailDeleteConfirmButton.gameObject.SetActive(false);
+        if (detailDeleteCancelButton)
+            detailDeleteCancelButton.gameObject.SetActive(false);
     }
 
     // ========================================================
@@ -481,10 +570,6 @@ public class SelectionBoxDrawer : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// 選択中ボタンだけ categoryButtonSelectedColor にする。
-    /// それ以外は categoryButtonNormalColor。
-    /// </summary>
     void SetCategoryButtonVisual(Button selected)
     {
         if (_categoryButtons == null) return;
@@ -495,12 +580,10 @@ public class SelectionBoxDrawer : MonoBehaviour
             var cb = b.colors;
             bool isSel = (selected != null && b == selected);
             var col = isSel ? categoryButtonSelectedColor : categoryButtonNormalColor;
-
             cb.normalColor = col;
             cb.highlightedColor = col;
             cb.selectedColor = col;
             cb.pressedColor = col;
-
             b.colors = cb;
         }
     }
@@ -599,6 +682,7 @@ public class SelectionBoxDrawer : MonoBehaviour
         if (detailPanelRoot)
             detailPanelRoot.gameObject.SetActive(false);
 
+        HideDeleteConfirmUI();
         DeselectCategoryButton();
     }
 

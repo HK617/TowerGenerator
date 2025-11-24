@@ -155,6 +155,28 @@ public class BuildPlacement : MonoBehaviour
     }
     readonly List<PlannedDemolition> _plannedDemolitions = new();
 
+    /// <summary>
+    /// SelectionBoxDrawer の「キャンセル」ボタンから呼ばれる想定。
+    /// すべての削除予約を取り消し、アイコンも消す。
+    /// </summary>
+    public void ClearAllPlannedDemolitions()
+    {
+        if (_plannedDemolitions.Count == 0) return;
+
+        // 今たまっている削除予約すべてに対してアイコンを消す
+        for (int i = 0; i < _plannedDemolitions.Count; i++)
+        {
+            var d = _plannedDemolitions[i];
+            if (d.target != null)
+            {
+                RemoveDemolitionIcon(d.target);
+            }
+        }
+
+        // リスト自体も空にする
+        _plannedDemolitions.Clear();
+    }
+
     // ===== セーブ用構造体 =====
     public struct SavedBuilding
     {
@@ -1056,7 +1078,7 @@ public class BuildPlacement : MonoBehaviour
         }
     }
 
-    void StartPlannedDemolitions()
+    public void StartPlannedDemolitions()
     {
         if (s_buildLocked) return;
         if (!useDroneBuild || droneManager == null) return;
