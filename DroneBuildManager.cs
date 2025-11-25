@@ -63,6 +63,57 @@ public class DroneBuildManager : MonoBehaviour
 
     public event Action<List<DroneWorker>, int> OnDroneStateChanged;
 
+    // ★ この ResourceMarker に対する採掘ジョブが
+    //    ・キューに入っている
+    //    ・または、ドローンが現在実行中
+    // のどちらかなら true を返す
+    public bool IsResourceInMiningQueue(ResourceMarker marker)
+    {
+        if (marker == null) return false;
+
+        // 1) キューにあるタスクをチェック
+        foreach (var t in _queue)
+        {
+            if (t.kind == TaskKind.MineResource && t.resourceMarker == marker)
+                return true;
+        }
+
+        // 2) すでにドローンが実行中のタスクもチェック
+        foreach (var d in _drones)
+        {
+            var cur = d.CurrentTask;
+            if (cur != null &&
+                cur.kind == TaskKind.MineResource &&
+                cur.resourceMarker == marker)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // ★ 追加：指定の ResourceMarker に対する採掘ターゲット座標をすべて取得
+    public bool TryGetMiningTargets(ResourceMarker marker, List<Vector3> results)
+    {
+        if (marker == null)
+            return false;
+
+        results.Clear();
+
+        foreach (var t in _queue)
+        {
+            if (t.kind == TaskKind.MineResource && t.resourceMarker == marker)
+            {
+                results.Add(t.worldPos);
+            }
+        }
+
+        // 実行中タスクも含めたい場合は、ここで _drones からも拾う
+
+        return results.Count > 0;
+    }
+
     void Awake()
     {
         if (Instance != null && Instance != this)

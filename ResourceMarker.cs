@@ -3,6 +3,9 @@ using UnityEngine;
 
 public class ResourceMarker : MonoBehaviour
 {
+    // ---- 外部から Resource ブロック一覧の親にアクセスするための getter ----
+    public Transform BlocksRoot => blocksRoot;
+
     [Header("Save 用")]
     [Tooltip("この資源を表す BuildingDef（セーブ / ロードで使用）")]
     public BuildingDef def;

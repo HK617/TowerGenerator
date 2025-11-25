@@ -414,12 +414,23 @@ public class SelectionBoxDrawer : MonoBehaviour
 
         HideDeleteConfirmUI();
         DeselectCategoryButton();
+
+        ClearHighlight();
+
+        // ★ ここを「新しく」追加してください
+        SyncMiningIconsWithMiningQueue();
     }
 
     void OnCategoryButtonPressed(string categoryName, string[] tags, Button sourceButton)
     {
         // ★ 他の項目が押されたときは採掘アイコンをキャンセル
         ClearMiningIconsFromCurrentSelection();
+
+        // ★ 他の項目が押されたときは削除予約アイコンも全部キャンセル
+        if (buildPlacement != null)
+        {
+            buildPlacement.ClearAllPlannedDemolitions();
+        }
 
         _currentCategoryButton = sourceButton;
         _currentCategoryTags = tags;
@@ -486,11 +497,16 @@ public class SelectionBoxDrawer : MonoBehaviour
     /// </summary>
     void CloseDetailPanelOnly()
     {
-        if (detailPanelRoot)
-            detailPanelRoot.gameObject.SetActive(false);
 
-        // ★ 採掘アイコンもキャンセル
+        if (!detailPanelRoot) return;
+
+        detailPanelRoot.gameObject.SetActive(false);
+
+        // プレビューだけのアイコンを消したい場合はこのまま使う
         ClearMiningIconsFromCurrentSelection();
+
+        // ★ 追加：キューに入っている分だけ、改めて MiningIcon を付け直す
+        SyncMiningIconsWithMiningQueue();
 
         // Delete 確定 UI をリセット
         HideDeleteConfirmUI();
@@ -756,6 +772,87 @@ public class SelectionBoxDrawer : MonoBehaviour
         }
     }
 
+    // ★ 追加：シーン内の全 Resource ブロックから採掘アイコンを消す
+    void ClearAllMiningIconsInScene()
+    {
+        var markers = FindObjectsOfType<ResourceMarker>();
+        foreach (var m in markers)
+        {
+            if (!m) continue;
+
+            // ★ ResourceMarker の階層内にある MiningIconRoot を全部消す
+            foreach (var tr in m.GetComponentsInChildren<Transform>(true))
+            {
+                if (tr == null) continue;
+                if (tr.name == "MiningIconRoot")
+                {
+                    Destroy(tr.gameObject);
+                }
+            }
+        }
+    }
+
+    // ★ 採掘キューの内容に合わせて MiningIcon を付け直す
+    void SyncMiningIconsWithMiningQueue()
+    {
+        var manager = DroneBuildManager.Instance;
+        if (manager == null)
+        {
+            ClearAllMiningIconsInScene();
+            return;
+        }
+
+        // 一時バッファ
+        var tmpTargets = new List<Vector3>();
+
+        var markers = FindObjectsOfType<ResourceMarker>();
+        foreach (var m in markers)
+        {
+            if (!m) continue;
+
+            // まず、この ResourceMarker 配下のアイコンを全部消す
+            foreach (var tr in m.GetComponentsInChildren<Transform>(true))
+            {
+                if (tr == null) continue;
+                if (tr.name == "MiningIconRoot")
+                {
+                    Destroy(tr.gameObject);
+                }
+            }
+
+            // この ResourceMarker に対する採掘ターゲット座標を全部取得
+            if (!manager.TryGetMiningTargets(m, tmpTargets))
+                continue; // 何もキューされていなければスキップ
+
+            // blocksRoot から子ブロックたちを取る（blocksRoot を使っている前提です）
+            Transform blocksRoot = m.BlocksRoot != null ? m.BlocksRoot : m.transform;
+
+            foreach (var targetPos in tmpTargets)
+            {
+                Transform best = null;
+                float bestSqr = float.MaxValue;
+
+                foreach (Transform child in blocksRoot)
+                {
+                    if (child == null) continue;
+
+                    float d2 = (child.position - targetPos).sqrMagnitude;
+                    if (d2 < bestSqr)
+                    {
+                        bestSqr = d2;
+                        best = child;
+                    }
+                }
+
+                if (best != null)
+                {
+                    // ★ 実際に採掘される Resource ブロックにアイコンを付ける
+                    AddMiningIcon(best.gameObject);
+                }
+            }
+        }
+    }
+
     // ========================================================
     // Resource Mining Icon
     // ========================================================
@@ -780,14 +877,12 @@ public class SelectionBoxDrawer : MonoBehaviour
             return;
         }
 
-        // ★ ここから修正：その Fine セルに建物があるならアイコンを付けない
+        // すでに建物がある細かいセルなら付けない（既存コード）
         if (buildPlacement != null &&
             buildPlacement.HasBuildingOnFineCellAtWorldPos(target.transform.position))
         {
-            // この Resource の細かいセルは既に建物に占有されている
             return;
         }
-        // ★ ここまで
 
         // 既存を消してリセット
         var oldRoot = target.transform.Find("MiningIconRoot");
@@ -796,7 +891,21 @@ public class SelectionBoxDrawer : MonoBehaviour
 
         GameObject root = new GameObject("MiningIconRoot");
         root.transform.SetParent(target.transform, false);
-        root.transform.localPosition = Vector3.zero;
+
+        // ★★★ ここから位置計算を修正 ★★★
+        // デフォルトはターゲットの位置
+        Vector3 worldCenter = target.transform.position;
+
+        // 子階層に SpriteRenderer があれば、その bounds.center を優先
+        var srTarget = target.GetComponentInChildren<SpriteRenderer>();
+        if (srTarget != null)
+        {
+            worldCenter = srTarget.bounds.center;
+        }
+
+        // スプライトの中心の真上に root を置く
+        root.transform.position = worldCenter;
+        // ★★★ ここまで ★★★
 
         GameObject icon = new GameObject("MiningIcon");
         icon.transform.SetParent(root.transform, false);
@@ -806,7 +915,7 @@ public class SelectionBoxDrawer : MonoBehaviour
         sr.sprite = resourceMiningIconSprite;
         sr.sortingOrder = 998;
 
-        // 親スケールの逆数でアイコンサイズを一定に保つ
+        // 親スケールの逆数でアイコンサイズを一定に保つ（既存処理）
         var parentScale = target.transform.lossyScale;
         float invX = (parentScale.x != 0f) ? 1f / parentScale.x : 1f;
         float invY = (parentScale.y != 0f) ? 1f / parentScale.y : 1f;
@@ -820,14 +929,14 @@ public class SelectionBoxDrawer : MonoBehaviour
     /// </summary>
     void StartMiningJobsForCurrentIcons()
     {
-        var manager = FindObjectOfType<DroneBuildManager>();
+        var manager = DroneBuildManager.Instance;
         if (manager == null)
         {
             Debug.LogWarning("[SelectionBoxDrawer] DroneBuildManager がシーンにありません。");
             return;
         }
 
-        // ★ ここを追加：古い採掘予約をすべてリセット
+        // ここは今まで通り：一度キューをリセットして、_lastHighlighted からキューを積む
         manager.ClearAllMiningReservations();
 
         foreach (var go in _lastHighlighted)
@@ -841,11 +950,14 @@ public class SelectionBoxDrawer : MonoBehaviour
             if (resource == null) continue;
 
             Vector3 targetPos = go.transform.position;
-
             manager.EnqueueResourceMining(resource, targetPos);
         }
 
+        // プレビュー用アイコンはとりあえず全部消す
         ClearMiningIconsFromCurrentSelection();
+
+        // ★ 追加：採掘キューの内容に合わせて、シーン全体の MiningIcon を付け直す
+        SyncMiningIconsWithMiningQueue();
     }
 
     // ========================================================
@@ -914,6 +1026,11 @@ public class SelectionBoxDrawer : MonoBehaviour
 
     void OnBuildModeStartedFromOutside_Internal()
     {
+        // ★ 建築モードに入るときは、採掘キューに合わせて MiningIcon を同期
+        // （キューにない Resource からはアイコンを消す）
+        SyncMiningIconsWithMiningQueue();
+        // 以前の ClearAllMiningIconsInScene(); は削除して OK
+
         // ロック解除
         BuildPlacement.s_buildLocked = false;
 
