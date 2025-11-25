@@ -222,13 +222,48 @@ public class ResourceMarker : MonoBehaviour
     //----------------------------------
     // --- ドローン採掘 ---
     //----------------------------------
-    public void StartDroneMining()
+    // ★ ドローンがこの資源に対して採掘を開始したときに呼ばれる
+    public void StartDroneMining(Vector3 droneWorldPos)
     {
-        Debug.Log($"[ResourceMarker] Drone mining started at {transform.position}");
+        if (blocksRoot == null)
+        {
+            Debug.LogWarning("[ResourceMarker] blocksRoot が設定されていません。");
+            return;
+        }
 
-        // ★ ここに実際の採掘開始処理を書く（アイテム生成、進行度開始など）
-        // 例：
-        // GetComponent<DrillBehaviour>()?.StartMiningByDrone();
+        // 1. ドローンの位置に一番近い Resource ブロック(小ブロック)を探す
+        Transform nearestBlock = null;
+        float bestDistSq = float.MaxValue;
+
+        foreach (Transform child in blocksRoot)
+        {
+            if (child == null) continue;
+
+            float d = (child.position - droneWorldPos).sqrMagnitude;
+            if (d < bestDistSq)
+            {
+                bestDistSq = d;
+                nearestBlock = child;
+            }
+        }
+
+        if (nearestBlock == null)
+        {
+            Debug.LogWarning("[ResourceMarker] StartDroneMining: 対象ブロックが見つかりませんでした。");
+            return;
+        }
+
+        // 2. そのブロックの子から MiningIconBlinker を探して点滅ON
+        var blinker = nearestBlock.GetComponentInChildren<MiningIconBlinker>(true);
+        if (blinker != null)
+        {
+            blinker.SetBlinking(true);
+        }
+        else
+        {
+            Debug.LogWarning("[ResourceMarker] StartDroneMining: MiningIconBlinker が見つかりませんでした。");
+        }
+
+        Debug.Log($"[ResourceMarker] Drone mining started at {nearestBlock.position}");
     }
-
 }

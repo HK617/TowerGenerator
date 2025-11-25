@@ -330,8 +330,8 @@ public class DroneBuildManager : MonoBehaviour
             case TaskKind.MineResource:
                 if (task.resourceMarker != null)
                 {
-                    // ここで ResourceMarker に「ドリルのような採掘開始」を通知
-                    task.resourceMarker.StartDroneMining();   // ← このメソッドを ResourceMarker に実装
+                    // ★ worldPos（= 予約したブロックの位置）を渡す
+                    task.resourceMarker.StartDroneMining(task.worldPos);
                 }
                 break;
         }

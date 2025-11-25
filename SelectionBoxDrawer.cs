@@ -52,6 +52,9 @@ public class SelectionBoxDrawer : MonoBehaviour
     public Button conveyorButton;
 
     [Header("Resource Mining Icon")]
+    [Tooltip("Resource ブロックに付ける採掘アイコンのPrefab（任意）")]
+    public GameObject resourceMiningIconPrefab;
+    [Header("Resource Mining Icon")]
     [Tooltip("Resource ブロックに付ける採掘アイコン")]
     public Sprite resourceMiningIconSprite;
     [Tooltip("採掘アイコンのスケール")]
@@ -497,28 +500,27 @@ public class SelectionBoxDrawer : MonoBehaviour
     /// </summary>
     void CloseDetailPanelOnly()
     {
-
         if (!detailPanelRoot) return;
 
         detailPanelRoot.gameObject.SetActive(false);
 
-        // プレビューだけのアイコンを消したい場合はこのまま使う
+        // プレビューだけのアイコンを消す
         ClearMiningIconsFromCurrentSelection();
 
-        // ★ 追加：キューに入っている分だけ、改めて MiningIcon を付け直す
+        // 採掘キューの内容に合わせて MiningIcon を再配布
         SyncMiningIconsWithMiningQueue();
 
         // Delete 確定 UI をリセット
         HideDeleteConfirmUI();
 
-        // タグ色分けを解除して、選択中ハイライト色に戻す
-        RestorePlainHighlight();
+        // ★ ここを変更：ハイライト色ではなく defaultColor に戻す
+        // タグ色分け / ハイライトをすべて解除して、色を defaultColor に戻す
+        ClearHighlight();   // ← RestorePlainHighlight() の代わりにこれを呼ぶ
 
         // ボタンの選択を解除＆色も通常に
         DeselectCategoryButton();
-        // 建築ロックは解除しない（ユーザーが建築モードを開始するときに解除）
 
-        // ★ ボタンラベルなどもモードに合わせてリセット
+        // ボタンラベルなどもモードに合わせてリセット
         UpdateDetailButtonsForCurrentMode();
     }
 
@@ -871,9 +873,11 @@ public class SelectionBoxDrawer : MonoBehaviour
     void AddMiningIcon(GameObject target)
     {
         if (target == null) return;
-        if (resourceMiningIconSprite == null)
+
+        // Prefab も Sprite も両方空なら何もできない
+        if (resourceMiningIconPrefab == null && resourceMiningIconSprite == null)
         {
-            Debug.LogWarning("[SelectionBoxDrawer] resourceMiningIconSprite が設定されていません。");
+            Debug.LogWarning("[SelectionBoxDrawer] resourceMiningIconPrefab / resourceMiningIconSprite のどちらも設定されていません。");
             return;
         }
 
@@ -892,28 +896,39 @@ public class SelectionBoxDrawer : MonoBehaviour
         GameObject root = new GameObject("MiningIconRoot");
         root.transform.SetParent(target.transform, false);
 
-        // ★★★ ここから位置計算を修正 ★★★
-        // デフォルトはターゲットの位置
+        // スプライトの中心の真上に root を置く
         Vector3 worldCenter = target.transform.position;
-
-        // 子階層に SpriteRenderer があれば、その bounds.center を優先
         var srTarget = target.GetComponentInChildren<SpriteRenderer>();
         if (srTarget != null)
         {
             worldCenter = srTarget.bounds.center;
         }
-
-        // スプライトの中心の真上に root を置く
         root.transform.position = worldCenter;
-        // ★★★ ここまで ★★★
 
-        GameObject icon = new GameObject("MiningIcon");
-        icon.transform.SetParent(root.transform, false);
-        icon.transform.localPosition = new Vector3(0f, resourceMiningIconYOffset, 0f);
+        // ★ ここから Prefab or Sprite でアイコンを作る
+        GameObject icon;
 
-        var sr = icon.AddComponent<SpriteRenderer>();
-        sr.sprite = resourceMiningIconSprite;
-        sr.sortingOrder = 998;
+        if (resourceMiningIconPrefab != null)
+        {
+            // Prefab が指定されている場合はそれを使う
+            icon = Instantiate(resourceMiningIconPrefab, root.transform);
+            icon.transform.localPosition = new Vector3(0f, resourceMiningIconYOffset, 0f);
+        }
+        else
+        {
+            // Prefab がない場合は従来通り Sprite から作る
+            icon = new GameObject("MiningIcon");
+            icon.transform.SetParent(root.transform, false);
+            icon.transform.localPosition = new Vector3(0f, resourceMiningIconYOffset, 0f);
+
+            var sr = icon.AddComponent<SpriteRenderer>();
+            sr.sprite = resourceMiningIconSprite;
+            sr.sortingOrder = 998;
+
+            // ★ ここを追加：点滅コンポーネントを付けておく（最初はOFF）
+            var blinker = icon.AddComponent<MiningIconBlinker>();
+            blinker.SetBlinking(false);
+        }
 
         // 親スケールの逆数でアイコンサイズを一定に保つ（既存処理）
         var parentScale = target.transform.lossyScale;
