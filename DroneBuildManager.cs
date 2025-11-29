@@ -148,6 +148,9 @@ public class DroneBuildManager : MonoBehaviour
     void Update()
     {
         TryDispatchTasks();
+
+        //ドローンの位置や進捗を常に UI に反映させる
+        NotifyUI();
     }
 
     /// <summary>

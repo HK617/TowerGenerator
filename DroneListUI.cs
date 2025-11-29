@@ -1,9 +1,9 @@
-using System.Collections.Generic;
+ï»¿using System.Collections.Generic;
 using UnityEngine;
 using TMPro;
 using UnityEngine.UI;
 
-// VInputSystem‘Î‰
+// æ–°InputSystemå¯¾å¿œ
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
 using UnityEngine.InputSystem;
 #endif
@@ -11,60 +11,67 @@ using UnityEngine.InputSystem;
 public class DroneListUI : MonoBehaviour
 {
     [Header("Refs")]
-    [Tooltip("Œ»İ‰Ò“­‚µ‚Ä‚¢‚éƒhƒ[ƒ“‚ğŠÇ—‚·‚éƒ}ƒl[ƒWƒƒ")]
+    [Tooltip("ç¾åœ¨ç¨¼åƒã—ã¦ã„ã‚‹ãƒ‰ãƒ­ãƒ¼ãƒ³ã‚’ç®¡ç†ã™ã‚‹ãƒãƒãƒ¼ã‚¸ãƒ£")]
     public DroneBuildManager manager;
-    [Tooltip("DroneListItem ‚ğ•À‚×‚éƒRƒ“ƒeƒi")]
+    [Tooltip("DroneListItem ã‚’ä¸¦ã¹ã‚‹ã‚³ãƒ³ãƒ†ãƒŠ")]
     public RectTransform content;
-    [Tooltip("1s•ª‚Ìƒhƒ[ƒ“•\¦—pƒvƒŒƒnƒu")]
+    [Tooltip("1è¡Œåˆ†ã®ãƒ‰ãƒ­ãƒ¼ãƒ³è¡¨ç¤ºç”¨ãƒ—ãƒ¬ãƒãƒ–")]
     public DroneListItemUI itemPrefab;
 
+    [Header("Progress Bar Colors")]
+    public Color idleProgressColor = new Color(0.7f, 0.7f, 0.7f, 1f);
+    public Color movingProgressColor = new Color(0.4f, 0.8f, 1f, 1f);
+    public Color returningProgressColor = new Color(0.6f, 0.6f, 1f, 1f);
+    public Color buildingProgressColor = new Color(0.3f, 1f, 0.3f, 1f);
+    public Color miningProgressColor = new Color(1f, 0.85f, 0.3f, 1f);
+
     [Header("Slide Panel")]
-    [Tooltip("ƒpƒlƒ‹‚ª•\¦‚³‚ê‚Ä‚¢‚é‚Æ‚«‚ÌX(ƒ[ƒJƒ‹À•W)")]
+    [Tooltip("ãƒ‘ãƒãƒ«ãŒè¡¨ç¤ºã•ã‚Œã¦ã„ã‚‹ã¨ãã®X(ãƒ­ãƒ¼ã‚«ãƒ«åº§æ¨™)")]
     public float shownX = 0f;
-    [Tooltip("ƒpƒlƒ‹‚ª‰B‚ê‚Ä‚¢‚é‚Æ‚«‚ÌX(ƒ[ƒJƒ‹À•W)")]
+    [Tooltip("ãƒ‘ãƒãƒ«ãŒéš ã‚Œã¦ã„ã‚‹ã¨ãã®X(ãƒ­ãƒ¼ã‚«ãƒ«åº§æ¨™)")]
     public float hiddenX = -220f;
-    [Tooltip("ƒXƒ‰ƒCƒh‚É‚©‚¯‚é•b”i‘å‚«‚¢‚Ù‚Ç‚ä‚Á‚­‚èj")]
+    [Tooltip("ã‚¹ãƒ©ã‚¤ãƒ‰ã«ã‹ã‘ã‚‹ç§’æ•°ï¼ˆå¤§ãã„ã»ã©ã‚†ã£ãã‚Šï¼‰")]
     public float slideDuration = 0.25f;
 
     [Header("Handle Button")]
-    [Tooltip("ƒo[‚É‚­‚Á‚Â‚¢‚Ä“®‚­ƒ{ƒ^ƒ“(<< ‚Æ‚© >> ‚ğ•\¦‚·‚é‚â‚Â)")]
+    [Tooltip("ãƒãƒ¼ã«ãã£ã¤ã„ã¦å‹•ããƒœã‚¿ãƒ³(<< ã¨ã‹ >> ã‚’è¡¨ç¤ºã™ã‚‹ã‚„ã¤)")]
     public RectTransform handle;
-    [Tooltip("ƒ{ƒ^ƒ“ã‚Ì•¶š(TMP)")]
+    [Tooltip("ãƒœã‚¿ãƒ³ä¸Šã®æ–‡å­—(TMP)")]
     public TMP_Text handleLabel;
-    [Tooltip("ƒpƒlƒ‹‚ª•\¦‚³‚ê‚Ä‚¢‚é‚Æ‚«‚Ìƒ{ƒ^ƒ“•¶š")]
+    [Tooltip("ãƒ‘ãƒãƒ«ãŒè¡¨ç¤ºã•ã‚Œã¦ã„ã‚‹ã¨ãã®ãƒœã‚¿ãƒ³æ–‡å­—")]
     public string shownLabel = "<<";
-    [Tooltip("ƒpƒlƒ‹‚ª‰B‚ê‚Ä‚¢‚é‚Æ‚«‚Ìƒ{ƒ^ƒ“•¶š")]
+    [Tooltip("ãƒ‘ãƒãƒ«ãŒéš ã‚Œã¦ã„ã‚‹ã¨ãã®ãƒœã‚¿ãƒ³æ–‡å­—")]
     public string hiddenLabel = ">>";
-    [Tooltip("•\¦‚Ìƒnƒ“ƒhƒ‹‚ÌX(ƒpƒlƒ‹‚Ìƒ[ƒJƒ‹À•WŒn‚Å)")]
+    [Tooltip("è¡¨ç¤ºæ™‚ã®ãƒãƒ³ãƒ‰ãƒ«ã®X(ãƒ‘ãƒãƒ«ã®ãƒ­ãƒ¼ã‚«ãƒ«åº§æ¨™ç³»ã§)")]
     public float handleShownX = 200f;
-    [Tooltip("”ñ•\¦‚Ìƒnƒ“ƒhƒ‹‚ÌX(ƒpƒlƒ‹‚Ìƒ[ƒJƒ‹À•WŒn‚Å)")]
+    [Tooltip("éè¡¨ç¤ºæ™‚ã®ãƒãƒ³ãƒ‰ãƒ«ã®X(ãƒ‘ãƒãƒ«ã®ãƒ­ãƒ¼ã‚«ãƒ«åº§æ¨™ç³»ã§)")]
     public float handleHiddenX = 200f;
 
-    [Header("Detail Panel (‰E‘¤‚Ìƒƒjƒ…[)")]
-    [Tooltip("ƒhƒ[ƒ“‚ğƒNƒŠƒbƒN‚µ‚½‚Æ‚«‚É•\¦‚·‚éÚ×ƒƒjƒ…[ƒpƒlƒ‹")]
+    [Header("Detail Panel (å³å´ã®ãƒ¡ãƒ‹ãƒ¥ãƒ¼)")]
+    [Tooltip("ãƒ‰ãƒ­ãƒ¼ãƒ³ã‚’ã‚¯ãƒªãƒƒã‚¯ã—ãŸã¨ãã«è¡¨ç¤ºã™ã‚‹è©³ç´°ãƒ¡ãƒ‹ãƒ¥ãƒ¼ãƒ‘ãƒãƒ«")]
     public RectTransform detailPanel;
-    [Tooltip("Ú×ƒƒjƒ…[‚Ìƒ^ƒCƒgƒ‹ (ƒhƒ[ƒ“–¼‚È‚Ç)")]
+    [Tooltip("è©³ç´°ãƒ¡ãƒ‹ãƒ¥ãƒ¼ã®ã‚¿ã‚¤ãƒˆãƒ« (ãƒ‰ãƒ­ãƒ¼ãƒ³åãªã©)")]
     public TMP_Text detailTitleText;
-    [Tooltip("Ú×ƒƒjƒ…[‚ÌƒTƒuƒeƒLƒXƒg (ó‘Ô‚È‚Ç)")]
+    [Tooltip("è©³ç´°ãƒ¡ãƒ‹ãƒ¥ãƒ¼ã®ã‚µãƒ–ãƒ†ã‚­ã‚¹ãƒˆ (çŠ¶æ…‹ãªã©)")]
     public TMP_Text detailSubText;
 
     [Header("Detail Job UI")]
-    public TMP_Text detailJobText;     // Œ»İ‚Ì Job •\¦—p
-    public Button builderJobButton;    // Builder ƒ{ƒ^ƒ“
-    public Button minerJobButton;      // Miner ƒ{ƒ^ƒ“
+    public TMP_Text detailJobText;     // ç¾åœ¨ã® Job è¡¨ç¤ºç”¨
+    public Button builderJobButton;    // Builder ãƒœã‚¿ãƒ³
+    public Button minerJobButton;      // Miner ãƒœã‚¿ãƒ³
 
     [Header("Start")]
-    [Tooltip("ƒQ[ƒ€ŠJn‚Éƒpƒlƒ‹‚ğ•\¦‚µ‚½ó‘Ô‚É‚·‚é‚©")]
+    [Tooltip("ã‚²ãƒ¼ãƒ é–‹å§‹æ™‚ã«ãƒ‘ãƒãƒ«ã‚’è¡¨ç¤ºã—ãŸçŠ¶æ…‹ã«ã™ã‚‹ã‹")]
     public bool startShown = true;
 
-    // “à•”
+    // å†…éƒ¨
     readonly List<DroneListItemUI> _slots = new();
     RectTransform _rt;
     bool _isShown;
-    float _slideT;      // 0chidden, 1cshown
+    float _slideT;      // 0â€¦hidden, 1â€¦shown
     float _slideVel;
 
-    // Œ»İÚ×ƒƒjƒ…[‚Å‘I‘ğ’†‚ÌƒAƒCƒeƒ€
+    // ç¾åœ¨è©³ç´°ãƒ¡ãƒ‹ãƒ¥ãƒ¼ã§é¸æŠä¸­ã®ã‚¢ã‚¤ãƒ†ãƒ 
     DroneListItemUI _currentSelectedItem;
 
     void Awake()
@@ -73,16 +80,16 @@ public class DroneListUI : MonoBehaviour
         if (!manager)
             manager = FindFirstObjectByType<DroneBuildManager>();
 
-        // ‰Šú•\¦ó‘Ô
+        // åˆæœŸè¡¨ç¤ºçŠ¶æ…‹
         _isShown = startShown;
         _slideT = _isShown ? 1f : 0f;
 
-        // ‰ŠúˆÊ’u”½‰f
+        // åˆæœŸä½ç½®åæ˜ 
         float x = Mathf.Lerp(hiddenX, shownX, _slideT);
         SetPanelX(x);
         UpdateHandle(_slideT);
 
-        // Ú×ƒƒjƒ…[‚ÍÅ‰‚Í•Â‚¶‚Ä‚¨‚­
+        // è©³ç´°ãƒ¡ãƒ‹ãƒ¥ãƒ¼ã¯æœ€åˆã¯é–‰ã˜ã¦ãŠã
         if (detailPanel != null)
             detailPanel.gameObject.SetActive(false);
         _currentSelectedItem = null;
@@ -107,7 +114,7 @@ public class DroneListUI : MonoBehaviour
 
     void Update()
     {
-        // ‡@ ƒL[“ü—Í‚ÅƒgƒOƒ‹(Tab ƒL[)
+        // â‘  ã‚­ãƒ¼å…¥åŠ›ã§ãƒˆã‚°ãƒ«(Tab ã‚­ãƒ¼)
         bool toggleRequested = false;
 
 #if ENABLE_LEGACY_INPUT_MANAGER
@@ -123,14 +130,14 @@ public class DroneListUI : MonoBehaviour
         if (toggleRequested)
             Toggle();
 
-        // ‡A ƒXƒ‰ƒCƒhƒAƒjƒiƒpƒlƒ‹‚Æƒ{ƒ^ƒ“—¼•ûj
+        // â‘¡ ã‚¹ãƒ©ã‚¤ãƒ‰ã‚¢ãƒ‹ãƒ¡ï¼ˆãƒ‘ãƒãƒ«ã¨ãƒœã‚¿ãƒ³ä¸¡æ–¹ï¼‰
         float target = _isShown ? 1f : 0f;
         _slideT = Mathf.SmoothDamp(_slideT, target, ref _slideVel, slideDuration);
         float x = Mathf.Lerp(hiddenX, shownX, _slideT);
         SetPanelX(x);
         UpdateHandle(_slideT);
 
-        // š Ú×ƒƒjƒ…[‚ªŠJ‚¢‚Ä‚¢‚éŠÔ‚Í–ˆƒtƒŒ[ƒ€“à—e‚ğXViÌŒ@ƒƒO‚ğƒŠƒAƒ‹ƒ^ƒCƒ€”½‰fj
+        // â˜… è©³ç´°ãƒ¡ãƒ‹ãƒ¥ãƒ¼ãŒé–‹ã„ã¦ã„ã‚‹é–“ã¯æ¯ãƒ•ãƒ¬ãƒ¼ãƒ å†…å®¹ã‚’æ›´æ–°ï¼ˆæ¡æ˜ãƒ­ã‚°ã‚’ãƒªã‚¢ãƒ«ã‚¿ã‚¤ãƒ åæ˜ ï¼‰
         if (detailPanel != null && detailPanel.gameObject.activeSelf)
         {
             UpdateDetailPanel();
@@ -138,7 +145,7 @@ public class DroneListUI : MonoBehaviour
     }
 
     // =========================================================
-    // ŠO‚©‚çƒ{ƒ^ƒ“‚Ì OnClick ‚ÅŒÄ‚Ô—p
+    // å¤–ã‹ã‚‰ãƒœã‚¿ãƒ³ã® OnClick ã§å‘¼ã¶ç”¨
     // =========================================================
     public void Toggle()
     {
@@ -162,10 +169,10 @@ public class DroneListUI : MonoBehaviour
 
         _isShown = show;
 
-        // ‰Ÿ‚µ‚½uŠÔ‚É•¶š‚¾‚¯‚ÍÅV‚É‚µ‚Ä‚¨‚­
+        // æŠ¼ã—ãŸç¬é–“ã«æ–‡å­—ã ã‘ã¯æœ€æ–°ã«ã—ã¦ãŠã
         UpdateHandle(_isShown ? 1f : 0f);
 
-        // ƒpƒlƒ‹‚ğ‰B‚·‚Æ‚«‚ÍÚ×ƒƒjƒ…[‚à•Â‚¶‚é
+        // ãƒ‘ãƒãƒ«ã‚’éš ã™ã¨ãã¯è©³ç´°ãƒ¡ãƒ‹ãƒ¥ãƒ¼ã‚‚é–‰ã˜ã‚‹
         if (!_isShown && detailPanel != null)
         {
             detailPanel.gameObject.SetActive(false);
@@ -174,75 +181,142 @@ public class DroneListUI : MonoBehaviour
     }
 
     // =========================================================
-    // Drone‚Ìó‘Ô”½‰f
+    // Droneã®çŠ¶æ…‹åæ˜ 
+    // =========================================================
+    // =========================================================
+    // Droneã®çŠ¶æ…‹åæ˜ 
     // =========================================================
     void HandleState(List<DroneWorker> drones, int waitingCount)
     {
-        // ƒXƒƒbƒg•s‘«‚È‚ç‘‚â‚·
+        // ã‚¹ãƒ­ãƒƒãƒˆä¸è¶³ãªã‚‰å¢—ã‚„ã™
         while (_slots.Count < drones.Count)
         {
             var it = Instantiate(itemPrefab, content);
-            // ¶¬‚ÉƒNƒŠƒbƒNƒCƒxƒ“ƒg“o˜^
+            // ç”Ÿæˆæ™‚ã«ã‚¯ãƒªãƒƒã‚¯ã‚¤ãƒ™ãƒ³ãƒˆç™»éŒ²
             it.onClick = OnItemClicked;
             _slots.Add(it);
         }
 
-        // Šeƒhƒ[ƒ“‚Ìó‘Ô‚ğ1s‚¸‚Â”½‰f
+        // å„ãƒ‰ãƒ­ãƒ¼ãƒ³ã®çŠ¶æ…‹ã‚’1è¡Œãšã¤åæ˜ 
         for (int i = 0; i < drones.Count; i++)
         {
             var d = drones[i];
             var slot = _slots[i];
             slot.gameObject.SetActive(true);
 
-            // ‚±‚ÌƒXƒƒbƒg‚ª‚Ç‚Ìƒhƒ[ƒ“‚É‘Î‰‚µ‚Ä‚¢‚é‚©Šo‚¦‚³‚¹‚é
+            // ã“ã®ã‚¹ãƒ­ãƒƒãƒˆãŒã©ã®ãƒ‰ãƒ­ãƒ¼ãƒ³ã«å¯¾å¿œã—ã¦ã„ã‚‹ã‹è¦šãˆã•ã›ã‚‹
             slot.boundDrone = d;
-            slot.onClick = OnItemClicked; // ”O‚Ì‚½‚ß–ˆƒtƒŒ[ƒ€İ’è
+            slot.onClick = OnItemClicked; // å¿µã®ãŸã‚æ¯ãƒ•ãƒ¬ãƒ¼ãƒ è¨­å®š
 
-            string title = d.name;
+            // â˜… Titleï¼šãƒ‰ãƒ­ãƒ¼ãƒ³å ï¼‹ Job
+            string jobLabel = "";
+            switch (d.job)
+            {
+                case DroneWorker.JobType.Builder:
+                    jobLabel = "Builder";
+                    break;
+                case DroneWorker.JobType.Miner:
+                    jobLabel = "Miner";
+                    break;
+            }
+            string title = string.IsNullOrEmpty(jobLabel)
+                ? d.name
+                : $"{d.name}ï¼š{jobLabel}";
+
             string sub = "";
             float prog = 0f;
 
             switch (d.State)
             {
                 case DroneWorker.DroneState.Idle:
-                    sub = waitingCount > 0 ? $"‘Ò‹@’† ({waitingCount}Œ‘Ò‚¿)" : "‘Ò‹@’†";
+                    sub = waitingCount > 0 ? $"å¾…æ©Ÿä¸­ ({waitingCount}ä»¶å¾…ã¡)" : "å¾…æ©Ÿä¸­";
                     prog = 0f;
                     slot.SetColor(new Color(1f, 1f, 1f, 0.6f));
+                    slot.SetProgressColor(idleProgressColor);   // â˜… Inspector ã®è‰²
                     break;
 
                 case DroneWorker.DroneState.MovingToTarget:
-                    sub = "ˆÚ“®’†c";
-                    prog = 0.1f;
-                    slot.SetColor(new Color(0.8f, 1f, 0.8f, 1f));
-                    break;
+                    {
+                        sub = "ç§»å‹•ä¸­â€¦";
+
+                        float moveProg = 0f;
+                        if (d.MoveTotalDistance > 0.01f)
+                        {
+                            float remain = Vector3.Distance(d.transform.position, d.MoveTarget);
+                            moveProg = 1f - (remain / d.MoveTotalDistance);
+                        }
+
+                        prog = Mathf.Clamp01(moveProg);
+                        slot.SetColor(new Color(0.8f, 1f, 0.8f, 1f));
+                        slot.SetProgressColor(movingProgressColor);   // â˜… Inspector
+                        break;
+                    }
+
+                case DroneWorker.DroneState.ReturningToBase:
+                    {
+                        sub = "Baseã¸å¸°é‚„ä¸­â€¦";
+
+                        float moveProg = 0f;
+                        if (d.MoveTotalDistance > 0.01f)
+                        {
+                            float remain = Vector3.Distance(d.transform.position, d.MoveTarget);
+                            moveProg = 1f - (remain / d.MoveTotalDistance);
+                        }
+
+                        prog = Mathf.Clamp01(moveProg);
+                        slot.SetColor(new Color(0.8f, 0.8f, 1f, 1f));
+                        slot.SetProgressColor(returningProgressColor); // â˜… Inspector
+                        break;
+                    }
 
                 case DroneWorker.DroneState.Working:
-                    sub = d.CurrentTask != null && d.CurrentTask.def != null
-                        ? $"Œš’z’†: {d.CurrentTask.def.displayName}"
-                        : "Œš’z’†c";
-                    prog = d.CurrentProgress01;
-                    slot.SetColor(new Color(0.7f, 1f, 0.7f, 1f));
-                    break;
+                    {
+                        var task = d.CurrentTask;
 
-                default:
-                    sub = "";
-                    prog = 0f;
-                    slot.SetColor(new Color(1f, 1f, 1f, 1f));
-                    break;
+                        string label = "å»ºç¯‰ä¸­â€¦";
+
+                        if (task != null)
+                        {
+                            if (task.kind == DroneBuildManager.TaskKind.MineResource)
+                            {
+                                // æ¡æ˜
+                                string itemName = null;
+                                if (task.resourceMarker != null && task.resourceMarker.def != null)
+                                    itemName = task.resourceMarker.def.displayName;
+
+                                label = !string.IsNullOrEmpty(itemName) ? $"æ¡æ˜ä¸­ï¼š{itemName}" : "æ¡æ˜ä¸­â€¦";
+
+                                slot.SetProgressColor(miningProgressColor);  // â˜… Inspector
+                            }
+                            else
+                            {
+                                // å»ºç¯‰
+                                if (task.def != null)
+                                    label = $"å»ºç¯‰ä¸­ï¼š{task.def.displayName}";
+
+                                slot.SetProgressColor(buildingProgressColor); // â˜… Inspector
+                            }
+                        }
+
+                        sub = label;
+                        prog = d.CurrentProgress01;
+                        slot.SetColor(new Color(0.7f, 1f, 0.7f, 1f));
+                        break;
+                    }
             }
 
-            slot.SetTitle(title);
+        slot.SetTitle(title);
             slot.SetSub(sub);
             slot.SetProgress(prog);
         }
 
-        // —]‚Á‚½ƒXƒƒbƒg‚Í”ñ•\¦
+        // ä½™ã£ãŸã‚¹ãƒ­ãƒƒãƒˆã¯éè¡¨ç¤º
         for (int i = drones.Count; i < _slots.Count; i++)
         {
             _slots[i].gameObject.SetActive(false);
         }
 
-        // ƒhƒ[ƒ“‚Ìó‘Ô‚ª•Ï‚í‚Á‚ÄA‘I‘ğ’†‚Ìƒhƒ[ƒ“‚ª‚¢‚È‚­‚È‚Á‚½ê‡‚Íƒƒjƒ…[‚ğ•Â‚¶‚é
+        // ãƒ‰ãƒ­ãƒ¼ãƒ³ã®çŠ¶æ…‹ãŒå¤‰ã‚ã£ã¦ã€é¸æŠä¸­ã®ãƒ‰ãƒ­ãƒ¼ãƒ³ãŒã„ãªããªã£ãŸå ´åˆã¯ãƒ¡ãƒ‹ãƒ¥ãƒ¼ã‚’é–‰ã˜ã‚‹
         if (_currentSelectedItem != null &&
             (!_currentSelectedItem.gameObject.activeInHierarchy || _currentSelectedItem.boundDrone == null))
         {
@@ -258,7 +332,7 @@ public class DroneListUI : MonoBehaviour
         if (_currentSelectedItem.boundDrone == null) return;
 
         _currentSelectedItem.boundDrone.job = DroneWorker.JobType.Builder;
-        UpdateDetailPanel(); // •\¦‚àXV
+        UpdateDetailPanel(); // è¡¨ç¤ºã‚‚æ›´æ–°
     }
 
     void OnMinerJobButtonClicked()
@@ -272,14 +346,14 @@ public class DroneListUI : MonoBehaviour
 
 
     // =========================================================
-    // Ú×ƒƒjƒ…[‚ÌƒgƒOƒ‹•\¦iƒNƒŠƒbƒN‚³‚ê‚½‚Æ‚«j
+    // è©³ç´°ãƒ¡ãƒ‹ãƒ¥ãƒ¼ã®ãƒˆã‚°ãƒ«è¡¨ç¤ºï¼ˆã‚¯ãƒªãƒƒã‚¯ã•ã‚ŒãŸã¨ãï¼‰
     // =========================================================
     void OnItemClicked(DroneListItemUI item)
     {
         if (detailPanel == null)
             return;
 
-        // ‚·‚Å‚É‚±‚Ìs‚ª‘I‘ğ’† & ƒƒjƒ…[‚ªŠJ‚¢‚Ä‚¢‚é ¨ ƒNƒŠƒbƒN‚Å•Â‚¶‚é
+        // ã™ã§ã«ã“ã®è¡ŒãŒé¸æŠä¸­ & ãƒ¡ãƒ‹ãƒ¥ãƒ¼ãŒé–‹ã„ã¦ã„ã‚‹ â†’ ã‚¯ãƒªãƒƒã‚¯ã§é–‰ã˜ã‚‹
         if (_currentSelectedItem == item && detailPanel.gameObject.activeSelf)
         {
             detailPanel.gameObject.SetActive(false);
@@ -287,15 +361,15 @@ public class DroneListUI : MonoBehaviour
             return;
         }
 
-        // V‚µ‚­‘I‘ğ
+        // æ–°ã—ãé¸æŠ
         _currentSelectedItem = item;
 
-        // ƒƒjƒ…[‚ğŠJ‚­iˆÊ’u‚ÍŒÅ’èBRectTransform ‚ÌˆÊ’u‚ÍƒV[ƒ“‘¤‚Å’²®j
+        // ãƒ¡ãƒ‹ãƒ¥ãƒ¼ã‚’é–‹ãï¼ˆä½ç½®ã¯å›ºå®šã€‚RectTransform ã®ä½ç½®ã¯ã‚·ãƒ¼ãƒ³å´ã§èª¿æ•´ï¼‰
         detailPanel.gameObject.SetActive(true);
     }
 
     // =========================================================
-    // Ú×ƒpƒlƒ‹‚Ì“à—eXVió‘Ô + ÌŒ@ƒƒOj
+    // è©³ç´°ãƒ‘ãƒãƒ«ã®å†…å®¹æ›´æ–°ï¼ˆçŠ¶æ…‹ + æ¡æ˜ãƒ­ã‚°ï¼‰
     // =========================================================
     void UpdateDetailPanel()
     {
@@ -307,7 +381,7 @@ public class DroneListUI : MonoBehaviour
 
         var item = _currentSelectedItem;
 
-        // ƒ^ƒCƒgƒ‹
+        // ã‚¿ã‚¤ãƒˆãƒ«
         if (detailTitleText != null)
         {
             if (item.boundDrone != null)
@@ -318,7 +392,7 @@ public class DroneListUI : MonoBehaviour
                 detailTitleText.text = string.Empty;
         }
 
-        // ƒTƒuƒeƒLƒXƒgió‘Ô + ÌŒ@ƒƒOj
+        // ã‚µãƒ–ãƒ†ã‚­ã‚¹ãƒˆï¼ˆçŠ¶æ…‹ + æ¡æ˜ãƒ­ã‚°ï¼‰
         if (detailSubText != null)
         {
             if (item.boundDrone == null)
@@ -327,41 +401,44 @@ public class DroneListUI : MonoBehaviour
             }
             else
             {
-                // ‚Ü‚¸ó‘ÔƒeƒLƒXƒg
+                // ã¾ãšçŠ¶æ…‹ãƒ†ã‚­ã‚¹ãƒˆ
                 string stateLine;
                 switch (item.boundDrone.State)
                 {
                     case DroneWorker.DroneState.Idle:
-                        stateLine = "ó‘Ô: ‘Ò‹@’†";
+                        stateLine = "çŠ¶æ…‹: å¾…æ©Ÿä¸­";
                         break;
                     case DroneWorker.DroneState.MovingToTarget:
-                        stateLine = "ó‘Ô: ˆÚ“®’†";
+                        stateLine = "çŠ¶æ…‹: ç§»å‹•ä¸­";
                         break;
                     case DroneWorker.DroneState.Working:
-                        stateLine = "ó‘Ô: ì‹Æ’†";
+                        stateLine = "çŠ¶æ…‹: ä½œæ¥­ä¸­";
+                        break;
+                    case DroneWorker.DroneState.ReturningToBase:
+                        stateLine = "çŠ¶æ…‹: Baseã¸å¸°é‚„ä¸­";
                         break;
                     default:
                         stateLine = string.Empty;
                         break;
                 }
 
-                // ÌŒ@ƒƒO‚ğæ“¾
+                // æ¡æ˜ãƒ­ã‚°ã‚’å–å¾—
                 string miningSummary = item.boundDrone.GetMinedItemSummary();
 
                 if (string.IsNullOrEmpty(miningSummary))
                 {
-                    // ÌŒ@ƒƒO‚ª‚È‚¯‚ê‚Îó‘Ô‚¾‚¯
+                    // æ¡æ˜ãƒ­ã‚°ãŒãªã‘ã‚Œã°çŠ¶æ…‹ã ã‘
                     detailSubText.text = stateLine;
                 }
                 else
                 {
-                    // ó‘Ô + ‹ós + ÌŒ@ƒƒO
+                    // çŠ¶æ…‹ + ç©ºè¡Œ + æ¡æ˜ãƒ­ã‚°
                     detailSubText.text = stateLine + "\n\n" + miningSummary;
                 }
             }
         }
 
-        // š Job •\¦
+        // â˜… Job è¡¨ç¤º
         if (detailJobText != null)
         {
             if (item.boundDrone == null)
@@ -373,10 +450,10 @@ public class DroneListUI : MonoBehaviour
                 switch (item.boundDrone.job)
                 {
                     case DroneWorker.JobType.Builder:
-                        detailJobText.text = "Job: BuilderiŒš’z’S“–j";
+                        detailJobText.text = "Job: Builderï¼ˆå»ºç¯‰æ‹…å½“ï¼‰";
                         break;
                     case DroneWorker.JobType.Miner:
-                        detailJobText.text = "Job: MineriÌŒ@’S“–j";
+                        detailJobText.text = "Job: Minerï¼ˆæ¡æ˜æ‹…å½“ï¼‰";
                         break;
                 }
             }
@@ -398,14 +475,14 @@ public class DroneListUI : MonoBehaviour
         if (handle == null)
             return;
 
-        // ƒ{ƒ^ƒ“‚ÌˆÊ’u‚ğƒpƒlƒ‹‚Ìƒ[ƒJƒ‹‹óŠÔ‚Å­‚µ‰E‘¤‚ÉŒÅ’è‚µ‚Ä‚¨‚­
-        // i•\¦/”ñ•\¦‚Å‘½­‚¸‚ç‚µ‚½‚¢‚Æ‚«—p‚É2‚Â‚Ì’l‚ğ—pˆÓ‚µ‚Ä‚¢‚éj
+        // ãƒœã‚¿ãƒ³ã®ä½ç½®ã‚’ãƒ‘ãƒãƒ«ã®ãƒ­ãƒ¼ã‚«ãƒ«ç©ºé–“ã§å°‘ã—å³å´ã«å›ºå®šã—ã¦ãŠã
+        // ï¼ˆè¡¨ç¤º/éè¡¨ç¤ºã§å¤šå°‘ãšã‚‰ã—ãŸã„ã¨ãç”¨ã«2ã¤ã®å€¤ã‚’ç”¨æ„ã—ã¦ã„ã‚‹ï¼‰
         float hx = Mathf.Lerp(handleHiddenX, handleShownX, t);
         var hp = handle.anchoredPosition;
         hp.x = hx;
         handle.anchoredPosition = hp;
 
-        // ƒ‰ƒxƒ‹‚àXV
+        // ãƒ©ãƒ™ãƒ«ã‚‚æ›´æ–°
         if (handleLabel != null)
         {
             handleLabel.text = (t > 0.5f) ? shownLabel : hiddenLabel;

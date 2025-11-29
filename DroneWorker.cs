@@ -86,12 +86,20 @@ public class DroneWorker : MonoBehaviour
     public float CurrentProgress01 => _workProgress;
     public float SavedWorkTimer => _workTimer;
 
+    // ★ 追加：移動進捗バー用に公開するプロパティ
+    public Vector3 MoveStartPos => _moveStartPos;
+    public float MoveTotalDistance => _moveTotalDistance;
+    public Vector3 MoveTarget => _target;
+
     DroneState _state = DroneState.Idle;
     DroneBuildManager.BuildTask _task;
     Vector3 _target;
     float _workProgress;
     float _moveTimer;
     float _workTimer;
+
+    Vector3 _moveStartPos;
+    float _moveTotalDistance;
 
     public bool IsIdle => _state == DroneState.Idle;
 
@@ -179,10 +187,14 @@ public class DroneWorker : MonoBehaviour
         _moveTimer = 0f;
         _workTimer = 0f;
 
-        // ★ 採掘関連カウンタもリセット
+        // ★ 追加: 移動開始位置と距離を記録
+        _moveStartPos = transform.position;
+        _moveTotalDistance = Vector3.Distance(_moveStartPos, _target);
+
+        // ★ 採掘関連カウンタもリセット（元からある処理はそのまま）
         _miningTimer = 0f;
         _currentCarryCount = 0;
-        _miningVisualNotified = false;   // ★ MiningIcon をまだ消していない状態に戻す
+        _miningVisualNotified = false;
     }
 
     void Update()
@@ -379,6 +391,10 @@ public class DroneWorker : MonoBehaviour
             {
                 _state = DroneState.ReturningToBase;
                 _target = baseTransform.position;   // Base へ移動開始
+
+                // ★ 追加: 帰還の開始位置と距離を記録
+                _moveStartPos = transform.position;
+                _moveTotalDistance = Vector3.Distance(_moveStartPos, _target);
             }
             else
             {
@@ -518,6 +534,10 @@ public class DroneWorker : MonoBehaviour
         _task = task;
         _target = task.worldPos;
         _state = st;
+
+        // ★ 追加: Moving 中でセーブした場合に備えて距離を再計算
+        _moveStartPos = transform.position;
+        _moveTotalDistance = Vector3.Distance(_moveStartPos, _target);
 
         // 作業途中から再開
         _workProgress = Mathf.Clamp01(data.workProgress);
