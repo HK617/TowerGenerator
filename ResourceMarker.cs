@@ -48,6 +48,22 @@ public class ResourceMarker : MonoBehaviour
     [Tooltip("ブロックを少し前後させたい場合の Z オフセット")]
     public float zOffset = 0f;
 
+    [Header("Mining Visual")]
+    public Color miningStartedColor = Color.yellow;   // 見た目変更用（好みで）
+    public Color normalColor = Color.white;
+
+    bool _miningVisualApplied = false;
+
+    // ================================
+    // 採掘中の見た目制御
+    // ================================
+    [Header("Mining Visual")]
+    [Tooltip("ドローン採掘中に使う色")]
+    public Color miningColor = new Color(1f, 0.8f, 0.3f, 1f);
+
+    // 最初の色を記録しておく
+    private Color _defaultColor;
+    private bool _defaultColorStored;
     // ---- 生成タイミング ----
     [Header("生成タイミング")]
     [Tooltip("再生開始時に自動で GenerateBlocks() を呼ぶか")]
@@ -220,50 +236,73 @@ public class ResourceMarker : MonoBehaviour
     }
 
     //----------------------------------
-    // --- ドローン採掘 ---
+    // --- ドローン採掘 見た目制御 ---
     //----------------------------------
-    // ★ ドローンがこの資源に対して採掘を開始したときに呼ばれる
-    public void StartDroneMining(Vector3 droneWorldPos)
+
+    /// <summary>
+    /// ドローンが「この Resource のあるブロックで採掘を開始した」ときに呼ぶ
+    /// </summary>
+    public void OnDroneStartedMiningAt(Vector3 worldPos)
     {
-        if (blocksRoot == null)
+        var block = FindNearestResourceBlock(worldPos);
+        if (block == null) return;
+
+        var sr = block.GetComponentInChildren<SpriteRenderer>();
+        if (sr == null) return;
+
+        // 最初の色を記録（1回だけ）
+        if (!_defaultColorStored)
         {
-            Debug.LogWarning("[ResourceMarker] blocksRoot が設定されていません。");
-            return;
+            _defaultColor = sr.color;
+            _defaultColorStored = true;
         }
 
-        // 1. ドローンの位置に一番近い Resource ブロック(小ブロック)を探す
-        Transform nearestBlock = null;
-        float bestDistSq = float.MaxValue;
+        // 採掘中カラーに変更
+        sr.color = miningColor;
+    }
+
+    /// <summary>
+    /// 採掘が完了したときに呼ぶ
+    /// ・見た目を元に戻す
+    /// ・そのブロックの MiningIcon を削除する
+    /// </summary>
+    public void OnMiningCompletedAt(Vector3 worldPos)
+    {
+        var block = FindNearestResourceBlock(worldPos);
+        if (block == null) return;
+
+        // このブロックの子にある MiningIcon を消す
+        var blinker = block.GetComponentInChildren<MiningIconBlinker>(true);
+        if (blinker != null)
+        {
+            Destroy(blinker.gameObject);
+        }
+    }
+
+    /// <summary>
+    /// blocksRoot の子から、指定座標に一番近い ResourceBlock を探す
+    /// （2x2, 3x3 でも正しいブロックが取れるようにする）
+    /// </summary>
+    Transform FindNearestResourceBlock(Vector3 worldPos)
+    {
+        if (blocksRoot == null) return null;
+
+        Transform nearest = null;
+        float best = float.MaxValue;
 
         foreach (Transform child in blocksRoot)
         {
-            if (child == null) continue;
+            // ResourceBlock 以外は無視
+            if (!child.CompareTag("ResourceBlock")) continue;
 
-            float d = (child.position - droneWorldPos).sqrMagnitude;
-            if (d < bestDistSq)
+            float d = (child.position - worldPos).sqrMagnitude;
+            if (d < best)
             {
-                bestDistSq = d;
-                nearestBlock = child;
+                best = d;
+                nearest = child;
             }
         }
 
-        if (nearestBlock == null)
-        {
-            Debug.LogWarning("[ResourceMarker] StartDroneMining: 対象ブロックが見つかりませんでした。");
-            return;
-        }
-
-        // 2. そのブロックの子から MiningIconBlinker を探して点滅ON
-        var blinker = nearestBlock.GetComponentInChildren<MiningIconBlinker>(true);
-        if (blinker != null)
-        {
-            blinker.SetBlinking(true);
-        }
-        else
-        {
-            Debug.LogWarning("[ResourceMarker] StartDroneMining: MiningIconBlinker が見つかりませんでした。");
-        }
-
-        Debug.Log($"[ResourceMarker] Drone mining started at {nearestBlock.position}");
+        return nearest;
     }
 }

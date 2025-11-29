@@ -881,7 +881,7 @@ public class SelectionBoxDrawer : MonoBehaviour
             return;
         }
 
-        // すでに建物がある細かいセルなら付けない（既存コード）
+        // すでに建物がある細かいセルなら付けない
         if (buildPlacement != null &&
             buildPlacement.HasBuildingOnFineCellAtWorldPos(target.transform.position))
         {
@@ -925,12 +925,19 @@ public class SelectionBoxDrawer : MonoBehaviour
             sr.sprite = resourceMiningIconSprite;
             sr.sortingOrder = 998;
 
-            // ★ ここを追加：点滅コンポーネントを付けておく（最初はOFF）
+            // Sprite 版はここで Blinker を付ける
             var blinker = icon.AddComponent<MiningIconBlinker>();
-            blinker.SetBlinking(false);
+            blinker.SetBlinking(true);    // ★ 最初から点滅ON
         }
 
-        // 親スケールの逆数でアイコンサイズを一定に保つ（既存処理）
+        // Prefab 版でも Blinker が付いていたら点滅ONにする
+        var prefabBlinker = icon.GetComponent<MiningIconBlinker>();
+        if (prefabBlinker != null)
+        {
+            prefabBlinker.SetBlinking(true);  // ★ プレハブも点滅ON
+        }
+
+        // 親スケールの逆数でアイコンサイズを一定に保つ
         var parentScale = target.transform.lossyScale;
         float invX = (parentScale.x != 0f) ? 1f / parentScale.x : 1f;
         float invY = (parentScale.y != 0f) ? 1f / parentScale.y : 1f;

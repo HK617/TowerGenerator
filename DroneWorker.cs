@@ -53,6 +53,8 @@ public class DroneWorker : MonoBehaviour
     // 採掘用タイマー
     float _miningTimer = 0f;
 
+    bool _miningVisualNotified = false;
+
     // ドローンが今まで掘ってきたアイテム（種類→個数）
     Dictionary<string, int> _minedItems = new Dictionary<string, int>();
 

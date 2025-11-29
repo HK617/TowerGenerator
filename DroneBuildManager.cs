@@ -1,4 +1,5 @@
-﻿using System;
+﻿
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -101,6 +102,7 @@ public class DroneBuildManager : MonoBehaviour
 
         results.Clear();
 
+        // 1) キューに溜まっている MineResource
         foreach (var t in _queue)
         {
             if (t.kind == TaskKind.MineResource && t.resourceMarker == marker)
@@ -109,7 +111,17 @@ public class DroneBuildManager : MonoBehaviour
             }
         }
 
-        // 実行中タスクも含めたい場合は、ここで _drones からも拾う
+        // 2) すでにドローンが実行中の MineResource も追加
+        foreach (var d in _drones)
+        {
+            var cur = d.CurrentTask;
+            if (cur != null &&
+                cur.kind == TaskKind.MineResource &&
+                cur.resourceMarker == marker)
+            {
+                results.Add(cur.worldPos);
+            }
+        }
 
         return results.Count > 0;
     }
@@ -326,12 +338,13 @@ public class DroneBuildManager : MonoBehaviour
                 task.placer?.FinalizeFineDemolish(task.fineCell, task.targetToDemolish);
                 break;
 
-            // ★ 追加：採掘完了時の処理
+            // ★ 採掘完了時
             case TaskKind.MineResource:
                 if (task.resourceMarker != null)
                 {
-                    // ★ worldPos（= 予約したブロックの位置）を渡す
-                    task.resourceMarker.StartDroneMining(task.worldPos);
+                    // どのブロックを掘ったか → task.worldPos に入っているので、
+                    // その位置付近の MiningIcon を消す
+                    task.resourceMarker.OnMiningCompletedAt(task.worldPos);
                 }
                 break;
         }
