@@ -141,7 +141,6 @@ public class DroneBuildManager : MonoBehaviour
 
     void Start()
     {
-        SpawnInitialDrones();
         NotifyUI();
     }
 
@@ -156,27 +155,42 @@ public class DroneBuildManager : MonoBehaviour
     /// <summary>
     /// ゲーム中の Base を登録する（建設 / ロード直後に呼び出す）
     /// </summary>
-    public void RegisterBase(Transform baseTr)
+    public void RegisterBase(Transform baseTransform)
     {
-        baseTransform = baseTr;
+        this.baseTransform = baseTransform;
 
-        // 既に存在しているドローンにも教える
+        // ★ Base の位置をドローンのスポーン地点として使う
+        if (droneSpawnPoint == null)
+        {
+            droneSpawnPoint = baseTransform;
+        }
+
+        // 既に存在しているドローンにも Base 情報を教える
         foreach (var d in _drones)
         {
-            if (d != null)
+            if (d == null) continue;
+
+            d.baseTransform = baseTransform;
+
+            // ★ まだ何もしていないドローンは Base の位置に集める
+            if (d.State == DroneWorker.DroneState.Idle)
             {
-                d.baseTransform = baseTr;
+                d.transform.position = baseTransform.position;
             }
         }
 
         Debug.Log($"[DroneBuildManager] Base registered at {baseTransform.position}");
+
+        // ★ まだドローンが1体も居ない場合だけ、このタイミングで生産する
+        if (_drones.Count == 0)
+        {
+            SpawnInitialDrones();
+            NotifyUI();
+        }
     }
 
     void SpawnInitialDrones()
     {
-        // ★ ここでは Base 探しをしない。
-        //    Base は BuildPlacement などから RegisterBase() で登録してもらう。
-
         if (dronePrefab == null)
         {
             Debug.LogError("[DroneBuildManager] dronePrefab が設定されていません。");
@@ -185,13 +199,19 @@ public class DroneBuildManager : MonoBehaviour
 
         for (int i = 0; i < initialDroneCount; i++)
         {
-            Vector3 pos = droneSpawnPoint ? droneSpawnPoint.position : transform.position;
+            // ★ RegisterBase() から呼ばれるので、基本的には baseTransform != null になっている想定
+            Vector3 pos;
+            if (baseTransform != null)
+                pos = baseTransform.position;
+            else if (droneSpawnPoint != null)
+                pos = droneSpawnPoint.position;
+            else
+                pos = transform.position;
+
             var d = Instantiate(dronePrefab, pos, Quaternion.identity);
             d.manager = this;
             d.name = $"Drone_{i + 1}";
-
-            // ★ 登録済みならドローンに渡す（まだ無ければ null のままでOK）
-            d.baseTransform = baseTransform;
+            d.baseTransform = baseTransform;   // Base 情報も渡しておく
 
             _drones.Add(d);
         }

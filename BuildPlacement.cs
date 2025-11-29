@@ -613,7 +613,15 @@ public class BuildPlacement : MonoBehaviour
             ? Quaternion.Euler(0f, 0f, _currentRotationDeg)
             : Quaternion.identity;
 
+        // ★★★ Base だけは「即完成」にする（ドローン建築を使わない）
+        if (isFirstBase)
+        {
+            // Base専用の復元処理：細かいグリッド占有・六角タイル・FlowFieldターゲット・UI・DroneBuildManager.RegisterBase まで全部やってくれる
+            RestoreBaseAt(defToPlace, pos);
+            return;
+        }
 
+        // ここから先は通常の建物（ドローン建築 or 即建築）
         if (useDroneBuild && droneManager != null)
         {
             GameObject ghost = Instantiate(defToPlace.prefab, pos, rot, prefabParent);
@@ -628,8 +636,6 @@ public class BuildPlacement : MonoBehaviour
             SetSpriteColor(ghost.transform, new Color(1f, 1f, 1f, previewAlpha));
 
             _placedByCell[cell] = ghost;
-            if (isFirstBase)
-                _protectedCells.Add(cell);
 
             // ★ ゴースト設置時点で周囲のMachineに通知して、コンベアーのスプライト更新
             NotifyMachineNeighbors(ghost);
@@ -637,25 +643,10 @@ public class BuildPlacement : MonoBehaviour
             // ★ ここではまだドローンを動かさず、「計画中ゴースト」として登録だけ
             AddPlannedGhostForBig(defToPlace, cell, pos, ghost);
         }
-
         else
         {
             var go = Instantiate(defToPlace.prefab, pos, rot, prefabParent);
             _placedByCell[cell] = go;
-
-            if (isFirstBase)
-            {
-                _protectedCells.Add(cell);
-                s_baseBuilt = true;
-
-                // ★ Base Transform をドローンへ登録（追加）
-                if (DroneBuildManager.Instance != null)
-                    DroneBuildManager.Instance.RegisterBase(go.transform);
-
-                var ui = Object.FindFirstObjectByType<StartMenuUI>();
-                if (ui != null)
-                    ui.TrySpawnBaseAt(pos);
-            }
 
             if (flowField != null)
                 RegisterBuildingToFlowField(defToPlace, pos, true);
