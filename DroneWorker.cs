@@ -313,7 +313,7 @@ public class DroneWorker : MonoBehaviour
             if (manager != null && _task != null && _task.kind == DroneBuildManager.TaskKind.MineResource)
             {
                 // 今回掘っていた資源名を決める
-                string displayName = "資源";
+                string displayName = "Resouce1";
                 var marker = _task.resourceMarker;
                 if (marker != null && marker.def != null && !string.IsNullOrEmpty(marker.def.displayName))
                 {
@@ -404,7 +404,7 @@ public class DroneWorker : MonoBehaviour
             _miningTimer = 0f;
 
             // Resource の種類名を決める
-            string displayName = "資源";
+            string displayName = "Resouce1";
             if (marker.def != null && !string.IsNullOrEmpty(marker.def.displayName))
             {
                 displayName = marker.def.displayName;
