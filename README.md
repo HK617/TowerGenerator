@@ -29,3 +29,5 @@ CameraScrollZoom.cs
 PathPreviewRunner.cs
 
 PreviewRaidInput.cs
+
+MiningIconBlinker.cs ＃マイニングアイコンを点滅させるだけのプログラム
