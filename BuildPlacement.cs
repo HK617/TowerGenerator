@@ -644,15 +644,17 @@ public class BuildPlacement : MonoBehaviour
             _placedByCell[cell] = go;
 
             if (isFirstBase)
+            {
                 _protectedCells.Add(cell);
-
-            if (isFirstBase)
                 s_baseBuilt = true;
 
-            var ui = Object.FindFirstObjectByType<StartMenuUI>();
-            if (isFirstBase && ui != null)
-            {
-                ui.TrySpawnBaseAt(pos);
+                // ★ Base Transform をドローンへ登録（追加）
+                if (DroneBuildManager.Instance != null)
+                    DroneBuildManager.Instance.RegisterBase(go.transform);
+
+                var ui = Object.FindFirstObjectByType<StartMenuUI>();
+                if (ui != null)
+                    ui.TrySpawnBaseAt(pos);
             }
 
             if (flowField != null)
@@ -792,6 +794,12 @@ public class BuildPlacement : MonoBehaviour
         if (ui != null)
         {
             ui.TrySpawnBaseAt(pos);
+        }
+
+        // FlowField や UI の設定が終わった後に追加
+        if (DroneBuildManager.Instance != null)
+        {
+            DroneBuildManager.Instance.RegisterBase(baseGO.transform);
         }
     }
 

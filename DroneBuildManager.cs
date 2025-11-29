@@ -22,6 +22,9 @@ public class DroneBuildManager : MonoBehaviour
     public DroneWorker dronePrefab;
     public Transform droneSpawnPoint;
 
+    [Header("Base")]
+    public Transform baseTransform;
+
     // ─────────────────────────────────────────────
     // 以前あった「maxQueuedTasks」は削除しました
     // ─────────────────────────────────────────────
@@ -147,8 +150,30 @@ public class DroneBuildManager : MonoBehaviour
         TryDispatchTasks();
     }
 
+    /// <summary>
+    /// ゲーム中の Base を登録する（建設 / ロード直後に呼び出す）
+    /// </summary>
+    public void RegisterBase(Transform baseTr)
+    {
+        baseTransform = baseTr;
+
+        // 既に存在しているドローンにも教える
+        foreach (var d in _drones)
+        {
+            if (d != null)
+            {
+                d.baseTransform = baseTr;
+            }
+        }
+
+        Debug.Log($"[DroneBuildManager] Base registered at {baseTransform.position}");
+    }
+
     void SpawnInitialDrones()
     {
+        // ★ ここでは Base 探しをしない。
+        //    Base は BuildPlacement などから RegisterBase() で登録してもらう。
+
         if (dronePrefab == null)
         {
             Debug.LogError("[DroneBuildManager] dronePrefab が設定されていません。");
@@ -161,6 +186,10 @@ public class DroneBuildManager : MonoBehaviour
             var d = Instantiate(dronePrefab, pos, Quaternion.identity);
             d.manager = this;
             d.name = $"Drone_{i + 1}";
+
+            // ★ 登録済みならドローンに渡す（まだ無ければ null のままでOK）
+            d.baseTransform = baseTransform;
+
             _drones.Add(d);
         }
     }
@@ -340,12 +369,6 @@ public class DroneBuildManager : MonoBehaviour
 
             // ★ 採掘完了時
             case TaskKind.MineResource:
-                if (task.resourceMarker != null)
-                {
-                    // どのブロックを掘ったか → task.worldPos に入っているので、
-                    // その位置付近の MiningIcon を消す
-                    task.resourceMarker.OnMiningCompletedAt(task.worldPos);
-                }
                 break;
         }
     }
@@ -406,6 +429,31 @@ public class DroneBuildManager : MonoBehaviour
     {
         OnDroneStateChanged?.Invoke(new List<DroneWorker>(_drones), _queue.Count);
     }
+
+    // 全体の所有アイテム（Key: アイテム名, Value: 個数）
+    Dictionary<string, int> _globalInventory = new Dictionary<string, int>();
+
+    /// <summary>
+    /// Base に納品されたアイテムを全体在庫に加算する
+    /// </summary>
+    public void RegisterDeliveredItems(string displayName, int amount)
+    {
+        if (amount <= 0) return;
+        if (string.IsNullOrEmpty(displayName)) displayName = "資源";
+
+        int current;
+        if (!_globalInventory.TryGetValue(displayName, out current))
+            current = 0;
+
+        _globalInventory[displayName] = current + amount;
+
+        Debug.Log($"[DroneBuildManager] {displayName} を {amount} 個納品 (合計: {_globalInventory[displayName]})");
+    }
+
+    /// <summary>
+    /// 外部用：読み取り専用の全体在庫
+    /// </summary>
+    public IReadOnlyDictionary<string, int> GlobalInventory => _globalInventory;
 
     // =========================
     // ここからセーブ/ロード対応

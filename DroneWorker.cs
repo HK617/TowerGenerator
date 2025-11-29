@@ -8,7 +8,8 @@ public class DroneWorker : MonoBehaviour
     {
         Idle,
         MovingToTarget,
-        Working
+        Working,
+        ReturningToBase
     }
 
     public enum JobType
@@ -39,6 +40,9 @@ public class DroneWorker : MonoBehaviour
 
     [Header("Enemy avoid")]
     public LayerMask enemyCheckMask;
+
+    [Header("Base")]
+    public Transform baseTransform;
 
     [Header("Mining")]
     [Tooltip("1回の採掘にかかる秒数")]
@@ -178,6 +182,7 @@ public class DroneWorker : MonoBehaviour
         // ★ 採掘関連カウンタもリセット
         _miningTimer = 0f;
         _currentCarryCount = 0;
+        _miningVisualNotified = false;   // ★ MiningIcon をまだ消していない状態に戻す
     }
 
     void Update()
@@ -193,6 +198,10 @@ public class DroneWorker : MonoBehaviour
 
             case DroneState.Working:
                 TickWork();
+                return;
+
+            case DroneState.ReturningToBase:  // ★ 追加
+                TickReturnToBase();
                 return;
         }
     }
@@ -285,6 +294,58 @@ public class DroneWorker : MonoBehaviour
         }
     }
 
+    void TickReturnToBase()
+    {
+        if (baseTransform == null)
+        {
+            _state = DroneState.Idle;
+            _currentCarryCount = 0;
+            return;
+        }
+
+        Vector3 pos = transform.position;
+        Vector3 to = baseTransform.position - pos;
+        float dist = to.magnitude;
+
+        if (dist <= arriveDistance)
+        {
+            // ====== ここで納品処理をする ======
+            if (manager != null && _task != null && _task.kind == DroneBuildManager.TaskKind.MineResource)
+            {
+                // 今回掘っていた資源名を決める
+                string displayName = "資源";
+                var marker = _task.resourceMarker;
+                if (marker != null && marker.def != null && !string.IsNullOrEmpty(marker.def.displayName))
+                {
+                    displayName = marker.def.displayName;
+                }
+
+                // このドローンが「今回のタスクで持っている分」を全体在庫に加算
+                manager.RegisterDeliveredItems(displayName, _currentCarryCount);
+            }
+
+            // ドローン側の「持ち物」をリセット
+            _currentCarryCount = 0;
+            _minedItems.Clear();
+            _minedItemStats.Clear();
+
+            // タスク自体は完了扱いにする
+            manager?.NotifyDroneFinished(this, _task, true);
+            _task = null;
+
+            _state = DroneState.Idle;
+            return;
+        }
+
+        // 移動
+        if (dist > 0.001f)
+        {
+            Vector3 dir = to / dist;
+            transform.position += dir * speed * Time.deltaTime;
+        }
+    }
+
+    // MineResource タスク専用の「掘り続ける」処理
     // MineResource タスク専用の「掘り続ける」処理
     void TickMiningWork()
     {
@@ -299,22 +360,42 @@ public class DroneWorker : MonoBehaviour
             _workProgress = 0f;
             _miningTimer = 0f;
             _currentCarryCount = 0;
+            _miningVisualNotified = false;
             return;
         }
 
-        // すでに保有上限に達しているなら、これ以上掘らずタスク終了
+        // === すでに保有上限に達しているなら、これ以上掘らず Base へ向かう ===
         if (miningCarryCapacity > 0 && _currentCarryCount >= miningCarryCapacity)
         {
-            manager?.NotifyDroneFinished(this, _task, true);
-            _task = null;
-            _state = DroneState.Idle;
-            _workProgress = 0f;
-            _miningTimer = 0f;
-            _currentCarryCount = 0;
+            // ★ このタイミングで MiningIcon を消す（1回だけ）
+            if (!_miningVisualNotified)
+            {
+                marker.OnMiningCompletedAt(_task.worldPos);
+                _miningVisualNotified = true;
+            }
+
+            // ★ Base に帰るモードへ移行
+            if (baseTransform != null)
+            {
+                _state = DroneState.ReturningToBase;
+                _target = baseTransform.position;   // Base へ移動開始
+            }
+            else
+            {
+                // Base が無い場合は今まで通りタスク終了
+                manager?.NotifyDroneFinished(this, _task, true);
+                _task = null;
+                _state = DroneState.Idle;
+                _workProgress = 0f;
+                _miningTimer = 0f;
+                _currentCarryCount = 0;
+                _miningVisualNotified = false;
+            }
+
             return;
         }
 
-        // 一定時間ごとに「1回採掘する」
+        // === ここから通常の「一定時間ごとに掘る」処理 ===
         float interval = Mathf.Max(0.1f, miningInterval);
         _miningTimer += Time.deltaTime;
 
@@ -349,17 +430,6 @@ public class DroneWorker : MonoBehaviour
             _workProgress = Mathf.Clamp01((float)_currentCarryCount / miningCarryCapacity);
         else
             _workProgress = 0f;
-
-        // 上限に達したらタスク終了
-        if (miningCarryCapacity > 0 && _currentCarryCount >= miningCarryCapacity)
-        {
-            manager?.NotifyDroneFinished(this, _task, true);
-            _task = null;
-            _state = DroneState.Idle;
-            _workProgress = 0f;
-            _miningTimer = 0f;
-            _currentCarryCount = 0;
-        }
     }
 
     public string GetMiningSummaryString()
