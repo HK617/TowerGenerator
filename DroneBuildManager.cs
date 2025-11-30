@@ -97,6 +97,55 @@ public class DroneBuildManager : MonoBehaviour
         return false;
     }
 
+    /// <summary>
+    /// このタスクが「作りかけの建物」かどうか判定する。
+    /// （建築タスクで、ゴーストに ConstructionState が付き、
+    ///  一度でも素材が納品されていて、まだ完成していないもの）
+    /// </summary>
+    bool IsPartiallyBuilt(BuildTask t)
+    {
+        if (t == null) return false;
+
+        // 建築タスク以外は関係ない
+        if (t.kind != TaskKind.BigBuild && t.kind != TaskKind.FineBuild)
+            return false;
+
+        if (t.ghost == null) return false;
+
+        var cons = t.ghost.GetComponent<ConstructionState>();
+        if (cons == null) return false;
+
+        // 「作りかけ」＝ 納品済み > 0 かつ 未完成
+        return cons.HasStartedBuild && !cons.IsCompleted;
+    }
+
+    /// <summary>
+    /// キュー内のタスクを、「作りかけの建物」→「まだ手を付けていない建物・その他」
+    /// の順に並び替える。
+    /// </summary>
+    void ReorderQueueForBuildPriority()
+    {
+        if (_queue.Count <= 1)
+            return;
+
+        var list = new List<BuildTask>(_queue);
+        _queue.Clear();
+
+        // 1) 作りかけの建物タスクを先に
+        foreach (var t in list)
+        {
+            if (IsPartiallyBuilt(t))
+                _queue.Enqueue(t);
+        }
+
+        // 2) 残り（未着工建物＋解体＋採掘など）を後ろに
+        foreach (var t in list)
+        {
+            if (!IsPartiallyBuilt(t))
+                _queue.Enqueue(t);
+        }
+    }
+
     // ★ 追加：指定の ResourceMarker に対する採掘ターゲット座標をすべて取得
     public bool TryGetMiningTargets(ResourceMarker marker, List<Vector3> results)
     {
@@ -267,6 +316,9 @@ public class DroneBuildManager : MonoBehaviour
         if (_drones.Count == 0 || _queue.Count == 0)
             return;
 
+        // ★ 一度でも素材が入った建物を先に処理するように並び替え
+        ReorderQueueForBuildPriority();
+
         int loopGuard = _queue.Count; // 無限ループ防止
 
         while (_queue.Count > 0 && loopGuard-- > 0)
@@ -281,13 +333,27 @@ public class DroneBuildManager : MonoBehaviour
                 task.kind == TaskKind.BigBuild ||
                 task.kind == TaskKind.FineBuild;
 
-            // 建築タスクの場合は、まず Base の在庫で建てられるかを確認
-            if (isBuildTask && task.def != null)
+            // ★ 建築タスクで、ベースに素材が 1 つも無い場合は後回し
+            if (isBuildTask && task.def != null && task.def.buildCosts != null)
             {
-                // 足りなければこのタスクは一旦キューの末尾へ戻し、
-                // 別の（より安い）建築ゴーストを探すチャンスを与える
-                if (!HasEnoughResourcesFor(task.def))
+                bool hasAnyResource = false;
+                foreach (var cost in task.def.buildCosts)
                 {
+                    if (cost == null) continue;
+                    if (string.IsNullOrEmpty(cost.itemName)) continue;
+                    if (cost.amount <= 0) continue;
+
+                    int have = 0;
+                    if (_globalInventory.TryGetValue(cost.itemName, out have) && have > 0)
+                    {
+                        hasAnyResource = true;
+                        break;
+                    }
+                }
+
+                if (!hasAnyResource)
+                {
+                    // この建物に使う素材がベースに 1 個もない → まだ割り当てない
                     _queue.Enqueue(task);
                     continue;
                 }
@@ -305,16 +371,8 @@ public class DroneBuildManager : MonoBehaviour
                 if (!worker.CanAcceptTask(task.kind))
                     continue;
 
-                // 建築タスクなら、このドローンが一度に運べる量かどうかも確認
-                if (isBuildTask && task.def != null)
-                {
-                    int totalCost = GetTotalBuildCost(task.def);
-                    if (totalCost > worker.BuildCarryCapacity)
-                    {
-                        // このドローンでは一度に運べないので、別のドローンを探す
-                        continue;
-                    }
-                }
+                // ★ ここから先、BuildCarryCapacity で弾くチェックは削除
+                //    → 「コストが大きい建物も、何回かに分けて運ぶ」ため
 
                 worker.SetTask(task);
                 assigned = true;
@@ -410,21 +468,67 @@ public class DroneBuildManager : MonoBehaviour
         switch (task.kind)
         {
             case TaskKind.BigBuild:
-                task.placer?.FinalizeBigPlacement(task.def, task.bigCell, task.worldPos, task.ghost);
-                break;
             case TaskKind.FineBuild:
-                task.placer?.FinalizeFinePlacement(task.def, task.fineCell, task.worldPos, task.ghost);
-                break;
+                {
+                    // もし BuildingDef に建築コストが設定されているなら、
+                    // ConstructionState の IsComplete を満たしていない限り完成させない。
+                    bool hasCost =
+                        task.def != null &&
+                        task.def.buildCosts != null &&
+                        task.def.buildCosts.Count > 0;
+
+                    if (hasCost)
+                    {
+                        var ghost = task.ghost;
+                        if (ghost == null)
+                        {
+                            // ゴーストが無い時点でおかしいので、とりあえず再キュー
+                            _queue.Enqueue(task);
+                            return;
+                        }
+
+                        var cons = ghost.GetComponent<ConstructionState>();
+                        if (cons == null)
+                        {
+                            // 納品状態が作られていない → コンポーネントを付けて初期化しておく
+                            cons = ghost.AddComponent<ConstructionState>();
+                        }
+
+                        // Def の内容から entries を初期化（まだなら）
+                        cons.EnsureInitialized(task.def);
+
+                        // まだ必要数に達していないので、完成させずに再キュー
+                        if (!cons.IsCompleted)
+                        {
+                            _queue.Enqueue(task);
+                            return;
+                        }
+                    }
+
+                    // ここまで来た時点で「材料条件OK」なので、初めて建物を完成させる
+                    if (task.kind == TaskKind.BigBuild)
+                    {
+                        task.placer?.FinalizeBigPlacement(task.def, task.bigCell, task.worldPos, task.ghost);
+                    }
+                    else
+                    {
+                        task.placer?.FinalizeFinePlacement(task.def, task.fineCell, task.worldPos, task.ghost);
+                    }
+
+                    break;
+                }
 
             case TaskKind.BigDemolish:
                 task.placer?.FinalizeBigDemolish(task.bigCell, task.targetToDemolish);
                 break;
+
             case TaskKind.FineDemolish:
                 task.placer?.FinalizeFineDemolish(task.fineCell, task.targetToDemolish);
                 break;
 
             // ★ 採掘完了時
             case TaskKind.MineResource:
+                // 今は特に何もしない
                 break;
         }
     }
@@ -504,6 +608,145 @@ public class DroneBuildManager : MonoBehaviour
         _globalInventory[displayName] = current + amount;
 
         Debug.Log($"[DroneBuildManager] {displayName} を {amount} 個納品 (合計: {_globalInventory[displayName]})");
+    }
+
+    /// <summary>
+    /// 指定された建物に対して、残り必要な材料を
+    /// maxTotal 個まで Base 在庫から取り出す。
+    /// 戻り値: 実際に取り出した (itemName -> 個数) の辞書。
+    /// </summary>
+    public Dictionary<string, int> TakeBuildMaterials(
+        BuildingDef def,
+        ConstructionState state,
+        int maxTotal)
+    {
+        var result = new Dictionary<string, int>();
+
+        if (def == null || def.buildCosts == null || maxTotal <= 0)
+            return result;
+
+        foreach (var cost in def.buildCosts)
+        {
+            if (cost == null) continue;
+            if (string.IsNullOrEmpty(cost.itemName)) continue;
+            if (cost.amount <= 0) continue;
+
+            // そのアイテムの「まだ必要な数」を計算
+            int delivered = 0;
+            if (state != null)
+            {
+                delivered = state.GetDeliveredAmount(cost.itemName);
+            }
+            int remaining = cost.amount - delivered;
+            if (remaining <= 0) continue;
+
+            // Base 在庫をチェック
+            int have = 0;
+            _globalInventory.TryGetValue(cost.itemName, out have);
+            if (have <= 0) continue;
+
+            // このアイテムで実際に取れる数
+            int canTake = Mathf.Min(remaining, have, maxTotal);
+            if (canTake <= 0) continue;
+
+            // 在庫を減らす
+            _globalInventory[cost.itemName] = have - canTake;
+
+            // 結果辞書に加算
+            int currentTaken;
+            result.TryGetValue(cost.itemName, out currentTaken);
+            result[cost.itemName] = currentTaken + canTake;
+
+            maxTotal -= canTake;
+            if (maxTotal <= 0)
+                break;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 今のタスクの建物 + キューに入っている他の建物について、
+    /// 残り必要な材料を合計しつつ、maxTotal 個まで Base 在庫から取り出す。
+    /// 戻り値: 実際に取り出した (itemName -> 個数) の辞書。
+    /// </summary>
+    public Dictionary<string, int> TakeBuildMaterialsForRoute(
+        BuildTask currentTask,
+        ConstructionState currentState,
+        int maxTotal)
+    {
+        var result = new Dictionary<string, int>();
+
+        if (currentTask == null || currentTask.def == null || maxTotal <= 0)
+            return result;
+
+        int remaining = maxTotal;
+
+        // ---------- 1) まず「今の建物」ぶんを優先して積む ----------
+        if (currentTask.def != null)
+        {
+            if (currentState != null)
+            {
+                currentState.EnsureInitialized(currentTask.def);
+            }
+
+            var takenCurrent = TakeBuildMaterials(currentTask.def, currentState, remaining);
+            foreach (var kv in takenCurrent)
+            {
+                int cur;
+                result.TryGetValue(kv.Key, out cur);
+                result[kv.Key] = cur + kv.Value;
+                remaining -= kv.Value;
+            }
+
+            if (remaining <= 0)
+                return result;
+        }
+
+        // ---------- 2) まだキャパが余っていれば、キュー内の他の建物からも積む ----------
+        foreach (var t in _queue)
+        {
+            if (remaining <= 0)
+                break;
+
+            // 建築タスク以外は無視
+            if (t.kind != TaskKind.BigBuild && t.kind != TaskKind.FineBuild)
+                continue;
+
+            if (t.def == null)
+                continue;
+
+            // ゴーストから ConstructionState を取得
+            var ghost = t.ghost;
+            ConstructionState cons = null;
+            if (ghost != null)
+            {
+                cons = ghost.GetComponent<ConstructionState>();
+                if (cons == null)
+                {
+                    cons = ghost.AddComponent<ConstructionState>();
+                }
+            }
+
+            if (cons != null)
+            {
+                cons.EnsureInitialized(t.def);
+            }
+
+            var takenOther = TakeBuildMaterials(t.def, cons, remaining);
+            int sumTaken = 0;
+            foreach (var kv in takenOther)
+            {
+                int cur;
+                result.TryGetValue(kv.Key, out cur);
+                result[kv.Key] = cur + kv.Value;
+                sumTaken += kv.Value;
+            }
+
+            remaining -= sumTaken;
+        }
+
+        return result;
     }
 
     /// <summary>
