@@ -272,16 +272,49 @@ public class DroneBuildManager : MonoBehaviour
         while (_queue.Count > 0 && loopGuard-- > 0)
         {
             var task = _queue.Dequeue();
+            if (task == null)
+                continue;
+
             bool assigned = false;
+
+            bool isBuildTask =
+                task.kind == TaskKind.BigBuild ||
+                task.kind == TaskKind.FineBuild;
+
+            // 建築タスクの場合は、まず Base の在庫で建てられるかを確認
+            if (isBuildTask && task.def != null)
+            {
+                // 足りなければこのタスクは一旦キューの末尾へ戻し、
+                // 別の（より安い）建築ゴーストを探すチャンスを与える
+                if (!HasEnoughResourcesFor(task.def))
+                {
+                    _queue.Enqueue(task);
+                    continue;
+                }
+            }
 
             foreach (var worker in _drones)
             {
+                if (worker == null)
+                    continue;
+
                 if (!worker.IsIdle)
                     continue;
 
-                // ★ ここで Job に合うかチェック
+                // ★ Job に合うかチェック（Builder / Miner）
                 if (!worker.CanAcceptTask(task.kind))
                     continue;
+
+                // 建築タスクなら、このドローンが一度に運べる量かどうかも確認
+                if (isBuildTask && task.def != null)
+                {
+                    int totalCost = GetTotalBuildCost(task.def);
+                    if (totalCost > worker.BuildCarryCapacity)
+                    {
+                        // このドローンでは一度に運べないので、別のドローンを探す
+                        continue;
+                    }
+                }
 
                 worker.SetTask(task);
                 assigned = true;
@@ -471,6 +504,79 @@ public class DroneBuildManager : MonoBehaviour
         _globalInventory[displayName] = current + amount;
 
         Debug.Log($"[DroneBuildManager] {displayName} を {amount} 個納品 (合計: {_globalInventory[displayName]})");
+    }
+
+    /// <summary>
+    /// 現在の在庫で指定 BuildingDef を建てられるか？
+    /// </summary>
+    public bool HasEnoughResourcesFor(BuildingDef def)
+    {
+        if (def == null || def.buildCosts == null || def.buildCosts.Count == 0)
+            return true;
+
+        foreach (var cost in def.buildCosts)
+        {
+            if (cost == null) continue;
+            if (string.IsNullOrEmpty(cost.itemName)) continue;
+            if (cost.amount <= 0) continue;
+
+            int have = 0;
+            _globalInventory.TryGetValue(cost.itemName, out have);
+
+            if (have < cost.amount)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 実際に在庫からコスト分を消費する
+    /// （Base にドローンが到着したタイミングで呼ぶ想定）
+    /// </summary>
+    public bool TryConsumeResourcesFor(BuildingDef def)
+    {
+        if (def == null || def.buildCosts == null || def.buildCosts.Count == 0)
+            return true;
+
+        if (!HasEnoughResourcesFor(def))
+            return false;
+
+        foreach (var cost in def.buildCosts)
+        {
+            if (cost == null) continue;
+            if (string.IsNullOrEmpty(cost.itemName)) continue;
+            if (cost.amount <= 0) continue;
+
+            int have = 0;
+            _globalInventory.TryGetValue(cost.itemName, out have);
+
+            int next = have - cost.amount;
+            if (next > 0)
+                _globalInventory[cost.itemName] = next;
+            else
+                _globalInventory.Remove(cost.itemName);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// その BuildingDef 全体の「総コスト」（個数の合計）
+    /// 「より少ない材料で作れる建物」を比較したいとき用。
+    /// </summary>
+    public int GetTotalBuildCost(BuildingDef def)
+    {
+        if (def == null || def.buildCosts == null)
+            return 0;
+
+        int sum = 0;
+        foreach (var cost in def.buildCosts)
+        {
+            if (cost == null) continue;
+            if (cost.amount > 0) sum += cost.amount;
+        }
+        return sum;
     }
 
     /// <summary>

@@ -79,6 +79,27 @@ public class DroneWorker : MonoBehaviour
     // 読み取り専用で外部に渡したい場合に使える
     public IEnumerable<MinedItemStat> MinedItemStats => _minedItemStats.Values;
 
+    // =========================
+    // 建築用のフロー管理
+    // =========================
+    enum BuildFlowPhase
+    {
+        None,
+        GoingToSite,             // 建築現場へ移動中
+        GoingToBase,             // 現場に到着 → Base へ素材を取りに行く
+        ReturningWithMaterials,  // 素材を積んで現場に戻っている
+        Building                 // 現場で建築中
+    }
+
+    BuildFlowPhase _buildPhase = BuildFlowPhase.None;
+    Vector3 _buildSitePos;            // 建築現場の位置
+    bool _hasBuildMaterials = false;  // Base から素材を積んだかどうか
+
+    /// <summary>
+    /// 建築に使える所持上限（今回は採掘のキャパシティと同じ値を流用）
+    /// </summary>
+    public int BuildCarryCapacity => miningCarryCapacity;
+
     [HideInInspector] public DroneBuildManager manager;
 
     public DroneState State => _state;
@@ -181,20 +202,39 @@ public class DroneWorker : MonoBehaviour
     public void SetTask(DroneBuildManager.BuildTask task)
     {
         _task = task;
-        _target = task.worldPos;
-        _state = DroneState.MovingToTarget;
         _workProgress = 0f;
         _moveTimer = 0f;
         _workTimer = 0f;
 
-        // ★ 追加: 移動開始位置と距離を記録
-        _moveStartPos = transform.position;
-        _moveTotalDistance = Vector3.Distance(_moveStartPos, _target);
-
-        // ★ 採掘関連カウンタもリセット（元からある処理はそのまま）
+        // 採掘関連カウンタもリセット（元からある処理はそのまま）
         _miningTimer = 0f;
         _currentCarryCount = 0;
         _miningVisualNotified = false;
+
+        _hasBuildMaterials = false;
+
+        if (_task != null &&
+            (_task.kind == DroneBuildManager.TaskKind.BigBuild ||
+             _task.kind == DroneBuildManager.TaskKind.FineBuild))
+        {
+            // 建築タスク：まず建築現場へ向かう
+            _buildSitePos = _task.worldPos;
+            _buildPhase = BuildFlowPhase.GoingToSite;
+            _target = _buildSitePos;
+        }
+        else
+        {
+            // それ以外のタスク（解体・採掘など）は従来どおりターゲットに直接向かう
+            _buildSitePos = Vector3.zero;
+            _buildPhase = BuildFlowPhase.None;
+            _target = (_task != null) ? _task.worldPos : transform.position;
+        }
+
+        _state = DroneState.MovingToTarget;
+
+        // 移動開始位置と距離を記録
+        _moveStartPos = transform.position;
+        _moveTotalDistance = Vector3.Distance(_moveStartPos, _target);
     }
 
     void Update()
@@ -237,9 +277,22 @@ public class DroneWorker : MonoBehaviour
 
         if (dist <= reach)
         {
-            _state = DroneState.Working;
-            _workTimer = 0f;
-            _workProgress = 0f;
+            _moveTimer = 0f;
+
+            // 建築タスクの場合は、建築用のフェーズ制御に任せる
+            if (_task != null &&
+                (_task.kind == DroneBuildManager.TaskKind.BigBuild ||
+                 _task.kind == DroneBuildManager.TaskKind.FineBuild))
+            {
+                HandleBuildArrival();
+            }
+            else
+            {
+                // 従来どおり：その場で作業開始
+                _state = DroneState.Working;
+                _workTimer = 0f;
+                _workProgress = 0f;
+            }
             return;
         }
 
@@ -249,6 +302,8 @@ public class DroneWorker : MonoBehaviour
             manager?.NotifyDroneFinished(this, _task, false);
             _task = null;
             _state = DroneState.Idle;
+            _buildPhase = BuildFlowPhase.None;
+            _hasBuildMaterials = false;
             return;
         }
 
@@ -262,6 +317,99 @@ public class DroneWorker : MonoBehaviour
                 float ang = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg;
                 graphics.rotation = Quaternion.Euler(0, 0, ang - 90f);
             }
+        }
+    }
+
+    /// <summary>
+    /// 建築タスクで目的地に到達したときの処理
+    /// </summary>
+    void HandleBuildArrival()
+    {
+        if (_task == null || manager == null)
+        {
+            _state = DroneState.Idle;
+            _buildPhase = BuildFlowPhase.None;
+            return;
+        }
+
+        // 建築タスク以外は通常通り
+        if (_task.kind != DroneBuildManager.TaskKind.BigBuild &&
+            _task.kind != DroneBuildManager.TaskKind.FineBuild)
+        {
+            _state = DroneState.Working;
+            _workTimer = 0f;
+            _workProgress = 0f;
+            _buildPhase = BuildFlowPhase.None;
+            return;
+        }
+
+        switch (_buildPhase)
+        {
+            case BuildFlowPhase.GoingToSite:
+                // 現場に着いたので、Base へ素材を取りに行く
+                if (baseTransform == null)
+                {
+                    manager.NotifyDroneFinished(this, _task, false);
+                    _task = null;
+                    _state = DroneState.Idle;
+                    _buildPhase = BuildFlowPhase.None;
+                    return;
+                }
+
+                _buildPhase = BuildFlowPhase.GoingToBase;
+                _target = baseTransform.position;
+                _moveStartPos = transform.position;
+                _moveTotalDistance = Vector3.Distance(_moveStartPos, _target);
+                return;
+
+            case BuildFlowPhase.GoingToBase:
+                // Base に到着 → 必要素材を Base から引き落として「積む」
+                if (_task.def == null)
+                {
+                    manager.NotifyDroneFinished(this, _task, false);
+                    _task = null;
+                    _state = DroneState.Idle;
+                    _buildPhase = BuildFlowPhase.None;
+                    return;
+                }
+
+                // ここで実際に Base(=manager 側) の在庫を消費する
+                if (!manager.TryConsumeResourcesFor(_task.def))
+                {
+                    // 素材不足：この建築タスクはいったん失敗扱いにして戻す
+                    manager.NotifyDroneFinished(this, _task, false);
+                    _task = null;
+                    _state = DroneState.Idle;
+                    _buildPhase = BuildFlowPhase.None;
+                    return;
+                }
+
+                _hasBuildMaterials = true;
+
+                // 素材を積んだので現場に戻る
+                _buildPhase = BuildFlowPhase.ReturningWithMaterials;
+                _target = _buildSitePos;
+                _moveStartPos = transform.position;
+                _moveTotalDistance = Vector3.Distance(_moveStartPos, _target);
+                return;
+
+            case BuildFlowPhase.ReturningWithMaterials:
+                // 素材を持って現場に戻ってきたので、ここから建築作業を開始
+                _buildPhase = BuildFlowPhase.Building;
+                _state = DroneState.Working;
+                _workTimer = 0f;
+                _workProgress = 0f;
+                return;
+
+            case BuildFlowPhase.Building:
+                // 既に建築中の場合はそのまま TickWork() に任せる
+                _state = DroneState.Working;
+                return;
+
+            default:
+                _state = DroneState.Working;
+                _buildPhase = BuildFlowPhase.None;
+                return;
         }
     }
 
@@ -294,6 +442,8 @@ public class DroneWorker : MonoBehaviour
             _task = null;
             _state = DroneState.Idle;
             _workProgress = 0f;
+            _buildPhase = BuildFlowPhase.None;
+            _hasBuildMaterials = false;
             return;
         }
 
@@ -303,6 +453,8 @@ public class DroneWorker : MonoBehaviour
             _task = null;
             _state = DroneState.Idle;
             _workProgress = 0f;
+            _buildPhase = BuildFlowPhase.None;
+            _hasBuildMaterials = false;
         }
     }
 
@@ -355,6 +507,8 @@ public class DroneWorker : MonoBehaviour
             Vector3 dir = to / dist;
             transform.position += dir * speed * Time.deltaTime;
         }
+        _buildPhase = BuildFlowPhase.None;
+        _hasBuildMaterials = false;
     }
 
     // MineResource タスク専用の「掘り続ける」処理

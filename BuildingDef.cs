@@ -26,6 +26,20 @@ public class BuildingDef : ScriptableObject
     [Tooltip("回転可能なオブジェクトかどうか。TrueにするとRキーで回転させられる")]
     public bool allowRotation = false;
 
+    [System.Serializable]
+    public class BuildCost
+    {
+        [Tooltip("必要なアイテム名（Base に納品されるアイテム名と一致させる）")]
+        public string itemName;
+
+        [Tooltip("必要な個数")]
+        public int amount = 1;
+    }
+
+    [Header("建築コスト")]
+    [Tooltip("この建物を建てるのに必要な材料リスト")]
+    public List<BuildCost> buildCosts = new List<BuildCost>();
+
     // ========= ここから保存用バックアップ =========
     // Unity は bool[,] を保存できないので、フラットなリストにしておく
     [SerializeField, HideInInspector] int shapeSize = 3;

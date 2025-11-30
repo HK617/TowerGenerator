@@ -13,11 +13,14 @@ public class BuildingDefEditor : Editor
     SerializedProperty cellsHeight;
     SerializedProperty rebuildAfterPlace;
     SerializedProperty allowRotation;
+    SerializedProperty buildCostsProp;
 
     BuildingDef def;
 
     void OnEnable()
     {
+        serializedObject.Update();
+
         def = (BuildingDef)target;
         displayName = serializedObject.FindProperty("displayName");
         icon = serializedObject.FindProperty("icon");
@@ -28,6 +31,9 @@ public class BuildingDefEditor : Editor
         cellsHeight = serializedObject.FindProperty("cellsHeight");
         rebuildAfterPlace = serializedObject.FindProperty("rebuildAfterPlace");
         allowRotation = serializedObject.FindProperty("allowRotation");
+        buildCostsProp = serializedObject.FindProperty("buildCosts");
+
+        serializedObject.ApplyModifiedProperties();
 
         // シリアライズされたデータ → 実体配列 に起こす
         def.RestoreShape();
@@ -52,7 +58,7 @@ public class BuildingDefEditor : Editor
         int currentSize = def.GetShapeSize();
 
         // サイズ選択
-        int[] sizeOptions = {1, 2, 3, 4, 5, 6, 7, 8, 9, 20 };
+        int[] sizeOptions = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 20 };
         string[] sizeLabels = { "1×1", "2×2", "3×3", "4×4", "5×5", "6×6", "7×7", "8×8", "9×9", "20×20" };
         int newSize = EditorGUILayout.IntPopup("Grid Size", currentSize, sizeLabels, sizeOptions);
 
@@ -75,6 +81,10 @@ public class BuildingDefEditor : Editor
         EditorGUILayout.PropertyField(cellsWidth);
         EditorGUILayout.PropertyField(cellsHeight);
         EditorGUILayout.PropertyField(rebuildAfterPlace);
+
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Build Cost", EditorStyles.boldLabel);
+        EditorGUILayout.PropertyField(buildCostsProp, true);   // true でリスト展開表示
 
         serializedObject.ApplyModifiedProperties();
 
