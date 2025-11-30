@@ -212,6 +212,41 @@ public class DroneWorker : MonoBehaviour
         return sb.ToString();
     }
 
+    /// <summary>
+    /// 詳細メニュー用：Jobごとの「所持アイテム / ログ」を返す
+    /// Miner：採掘ログ
+    /// Builder：現在積んでいる建築素材
+    /// </summary>
+    public string GetHeldItemSummary()
+    {
+        // Miner の場合はこれまで通り採掘ログを返す
+        if (job == JobType.Miner)
+        {
+            return GetMinedItemSummary();
+        }
+
+        // Builder の場合は建築用の積み荷を表示
+        if (job == JobType.Builder)
+        {
+            if (_buildCargoItems == null || _buildCargoItems.Count == 0 || _buildCargoCount <= 0)
+                return "";
+
+            var sb = new StringBuilder();
+            sb.AppendLine("所持素材:");
+
+            foreach (var kv in _buildCargoItems)
+            {
+                // kv.Key = itemName（BuildingDef.BuildCost.itemName）
+                sb.AppendLine($"{kv.Key} x {kv.Value}");
+            }
+
+            return sb.ToString();
+        }
+
+        // それ以外のJobが増えたとき用の保険
+        return "";
+    }
+
     public void SetTask(DroneBuildManager.BuildTask task)
     {
         _task = task;

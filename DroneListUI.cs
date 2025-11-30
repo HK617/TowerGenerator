@@ -422,18 +422,18 @@ public class DroneListUI : MonoBehaviour
                         break;
                 }
 
-                // 採掘ログを取得
-                string miningSummary = item.boundDrone.GetMinedItemSummary();
+                // Jobに応じた「所持アイテム / 採掘ログ」を取得
+                string itemSummary = item.boundDrone.GetHeldItemSummary();
 
-                if (string.IsNullOrEmpty(miningSummary))
+                if (string.IsNullOrEmpty(itemSummary))
                 {
-                    // 採掘ログがなければ状態だけ
+                    // 何も表示する内容がなければ状態だけ
                     detailSubText.text = stateLine;
                 }
                 else
                 {
-                    // 状態 + 空行 + 採掘ログ
-                    detailSubText.text = stateLine + "\n\n" + miningSummary;
+                    // 状態 + 空行 + 所持アイテム/採掘ログ
+                    detailSubText.text = stateLine + "\n\n" + itemSummary;
                 }
             }
         }
