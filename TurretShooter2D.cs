@@ -22,12 +22,18 @@ public class TurretShooter2D : MonoBehaviour
     [Tooltip("コライダーが有効かどうかをチェックする間隔（秒）")]
     public float builtCheckInterval = 0.2f;
 
+    [Tooltip("ゴースト状態で使うレイヤー名（BuildPlacement.ghostMachineLayerName と同じにする）")]
+    public string ghostLayerName = "GhostMachine";
+
     float _cooldown;
     bool _isBuilt;
     float _nextBuiltCheckTime;
 
     Collider2D[] _cols2D;
     Collider[] _cols3D;
+
+    // -2 = 未初期化, -1 = 見つからなかった
+    int _ghostLayer = -2;
 
     void Awake()
     {
@@ -37,6 +43,34 @@ public class TurretShooter2D : MonoBehaviour
         // 自分＋子どもの Collider 一覧をキャッシュ
         _cols2D = GetComponentsInChildren<Collider2D>(true);
         _cols3D = GetComponentsInChildren<Collider>(true);
+
+        InitGhostLayer();
+    }
+
+    void InitGhostLayer()
+    {
+        if (_ghostLayer != -2) return;
+
+        if (string.IsNullOrEmpty(ghostLayerName))
+        {
+            _ghostLayer = -1;
+            return;
+        }
+
+        int layer = LayerMask.NameToLayer(ghostLayerName);
+        if (layer < 0)
+        {
+            Debug.LogWarning($"TurretShooter2D: ghost layer '{ghostLayerName}' が見つかりませんでした。");
+        }
+
+        _ghostLayer = layer;
+    }
+
+    bool IsOnGhostLayer(GameObject go)
+    {
+        InitGhostLayer();
+        if (_ghostLayer < 0) return false;
+        return go.layer == _ghostLayer;
     }
 
     void Update()
@@ -61,7 +95,7 @@ public class TurretShooter2D : MonoBehaviour
         {
             float cur = graphics.eulerAngles.z;
             float tgt = Mathf.Atan2(dir.y, dir.x) * Mathf.Rad2Deg;
-            float maxStep = rotateSpeedDegPerSec * Time.deltaTime; // ← ここが「角度で計算」
+            float maxStep = rotateSpeedDegPerSec * Time.deltaTime;
             float next = Mathf.MoveTowardsAngle(cur, tgt, maxStep);
             graphics.rotation = Quaternion.Euler(0f, 0f, next);
         }
@@ -88,15 +122,25 @@ public class TurretShooter2D : MonoBehaviour
 
     bool HasAnyEnabledCollider()
     {
+        // Turret本体がゴーストレイヤーに乗っている間は「未完成」
+        if (IsOnGhostLayer(gameObject))
+            return false;
+
         if (_cols2D != null)
         {
             foreach (var c in _cols2D)
-                if (c && c.enabled) return true;
+            {
+                if (c && c.enabled && !IsOnGhostLayer(c.gameObject))
+                    return true;
+            }
         }
         if (_cols3D != null)
         {
             foreach (var c in _cols3D)
-                if (c && c.enabled) return true;
+            {
+                if (c && c.enabled && !IsOnGhostLayer(c.gameObject))
+                    return true;
+            }
         }
         // 1つも有効コライダーが無ければ「まだゴースト」
         return false;
