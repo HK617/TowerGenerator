@@ -533,6 +533,32 @@ public class DroneWorker : MonoBehaviour
     }
 
     /// <summary>
+    /// 指定された BuildingDef に必要な素材を、このドローンが
+    /// 1 個以上積んでいるなら true を返す。
+    /// </summary>
+    public bool HasBuildCargoFor(BuildingDef def)
+    {
+        if (def == null || def.buildCosts == null)
+            return false;
+
+        foreach (var cost in def.buildCosts)
+        {
+            if (cost == null) continue;
+            if (string.IsNullOrEmpty(cost.itemName)) continue;
+            if (cost.amount <= 0) continue;
+
+            int have;
+            if (_buildCargoItems.TryGetValue(cost.itemName, out have) && have > 0)
+            {
+                // この建物に必要な itemName を少なくとも 1 個積んでいる
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// 現在の建築タスクのゴーストに、ドローンが積んでいる建材を「納品」する。
     /// </summary>
     void DeliverBuildMaterialsToCurrentSite()

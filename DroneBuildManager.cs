@@ -333,10 +333,13 @@ public class DroneBuildManager : MonoBehaviour
                 task.kind == TaskKind.BigBuild ||
                 task.kind == TaskKind.FineBuild;
 
-            // ★ 建築タスクで、ベースに素材が 1 つも無い場合は後回し
+            bool hasAnyResource = false;          // Base に必要素材があるか
+            bool hasCargoBuilderForTask = false;  // すでにこの建物用の素材を積んでいるドローンがいるか
+
+            // ---------- 建築タスクの場合の素材チェック ----------
             if (isBuildTask && task.def != null && task.def.buildCosts != null)
             {
-                bool hasAnyResource = false;
+                // 1) Base のインベントリに 1 個でも必要素材があるか？
                 foreach (var cost in task.def.buildCosts)
                 {
                     if (cost == null) continue;
@@ -351,32 +354,68 @@ public class DroneBuildManager : MonoBehaviour
                     }
                 }
 
-                if (!hasAnyResource)
+                // 2) すでにこの建物に使える素材を積んでいるドローンがいるか？
+                foreach (var worker in _drones)
                 {
-                    // この建物に使う素材がベースに 1 個もない → まだ割り当てない
+                    if (worker == null) continue;
+                    if (!worker.IsIdle) continue;
+                    if (!worker.CanAcceptTask(task.kind)) continue;
+
+                    if (worker.HasBuildCargoFor(task.def))
+                    {
+                        hasCargoBuilderForTask = true;
+                        break;
+                    }
+                }
+
+                // 3) Base にもドローンにも素材がないなら、今回は後回し
+                if (!hasAnyResource && !hasCargoBuilderForTask)
+                {
+                    // この建物に使う素材が、Base にもどのドローンにも 1 個もない → まだ割り当てない
                     _queue.Enqueue(task);
                     continue;
                 }
             }
 
-            foreach (var worker in _drones)
+            // ---------- ドローンの選択 ----------
+            DroneWorker chosen = null;
+
+            // (A) 建築タスクなら、まず「この建物の素材を既に積んでいるドローン」を優先
+            if (isBuildTask)
             {
-                if (worker == null)
-                    continue;
+                foreach (var worker in _drones)
+                {
+                    if (worker == null) continue;
+                    if (!worker.IsIdle) continue;
+                    if (!worker.CanAcceptTask(task.kind)) continue;
 
-                if (!worker.IsIdle)
-                    continue;
+                    if (worker.HasBuildCargoFor(task.def))
+                    {
+                        chosen = worker;
+                        break;
+                    }
+                }
+            }
 
-                // ★ Job に合うかチェック（Builder / Miner）
-                if (!worker.CanAcceptTask(task.kind))
-                    continue;
+            // (B) 見つからなければ、普通に Idle な対応ドローンを探す
+            if (chosen == null)
+            {
+                foreach (var worker in _drones)
+                {
+                    if (worker == null) continue;
+                    if (!worker.IsIdle) continue;
+                    if (!worker.CanAcceptTask(task.kind)) continue;
 
-                // ★ ここから先、BuildCarryCapacity で弾くチェックは削除
-                //    → 「コストが大きい建物も、何回かに分けて運ぶ」ため
+                    chosen = worker;
+                    break;
+                }
+            }
 
-                worker.SetTask(task);
+            // ---------- タスク割り当て or 再キュー ----------
+            if (chosen != null)
+            {
+                chosen.SetTask(task);
                 assigned = true;
-                break;
             }
 
             // 誰にも渡せなかったタスクはキューの末尾に戻す
