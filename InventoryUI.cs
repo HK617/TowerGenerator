@@ -45,11 +45,11 @@ public class InventoryUI : MonoBehaviour
 
     Dictionary<string, Sprite> _iconLookup = new();
 
-    [Header("Craft (Building Kits)")]
-    [Tooltip("クラフト可能な建物リスト")]
+    [Header("インベントリ内の建物ボタン (Eキーで開く画面・ゴースト選択)")]
+    [Tooltip("ここに並べた BuildingDef をインベントリパネル内に表示します")]
     public List<BuildingDef> craftableBuildings = new();
 
-    // クラフト行をキャッシュして、毎フレーム Destroy/Instantiate しないようにする
+    // 共通で使う行キャッシュ
     class CraftRowCache
     {
         public BuildingDef def;
@@ -59,22 +59,42 @@ public class InventoryUI : MonoBehaviour
         public Button button;
     }
 
-    List<CraftRowCache> _craftRows = new List<CraftRowCache>();
+    // Eキー側（インベントリパネル）の建物リスト
+    List<CraftRowCache> _inventoryBuildRows = new();
 
-    [Tooltip("建物クラフト行を並べる親 (VerticalLayoutGroup など)")]
+    [Tooltip("インベントリパネル内の建物ボタンを並べる親 (VerticalLayoutGroup など)")]
     public Transform craftListRoot;
 
-    [Tooltip("建物クラフト用の1行プレハブ (Icon + Label + Button)")]
+    [Tooltip("インベントリパネル内の建物ボタン用1行プレハブ (Icon + Label + Button)")]
     public GameObject craftRowPrefab;
 
+    [Header("クラフト画面 (Qキーで開く別パネル)")]
+    [Tooltip("Qキーで開くクラフト専用パネル")]
+    public GameObject craftPanel;
+
+    [Tooltip("クラフト画面の建物リスト親 (VerticalLayoutGroup など)")]
+    public Transform craftScreenListRoot;
+
+    [Tooltip("クラフト画面用の1行プレハブ (Icon + Label + Button)")]
+    public GameObject craftScreenRowPrefab;
+
+    // Qキー側（クラフトパネル）の建物リスト
+    List<CraftRowCache> _craftScreenRows = new();
+
+    [Header("BuildPlacement 参照 (ゴーストプレビュー用)")]
+    [Tooltip("建物のゴーストプレビューを出す BuildPlacement。未設定なら自動検索します。")]
+    public BuildPlacement buildPlacement;
+
     CanvasGroup _canvasGroup;
-    bool _wantVisible = false;   // 「論理的に開いているか」のフラグ
+    bool _wantVisible = false;   // インベントリパネル
     bool _isFading = false;
     float _fadeTime = 0f;
     float _fadeStartAlpha = 0f;
     float _fadeTargetAlpha = 0f;
-
     float _refreshTimer = 0f;
+
+    // クラフトパネル側フラグ（フェードは付けずに ON/OFF のみ）
+    bool _craftVisible = false;
 
     void Awake()
     {
@@ -90,6 +110,17 @@ public class InventoryUI : MonoBehaviour
             _canvasGroup.alpha = 0f;
             panel.SetActive(false);
             _wantVisible = false;
+        }
+
+        if (craftPanel != null)
+        {
+            craftPanel.SetActive(false);
+            _craftVisible = false;
+        }
+
+        if (buildPlacement == null)
+        {
+            buildPlacement = FindFirstObjectByType<BuildPlacement>();
         }
     }
 
@@ -121,33 +152,47 @@ public class InventoryUI : MonoBehaviour
             selectionMenuOpen = selectionMenu.menuRoot.gameObject.activeSelf;
         }
 
-        // 範囲選択メニューが開かれていたら、インベントリは自動で閉じる
-        if (selectionMenuOpen && _wantVisible)
+        // 範囲選択メニューが開かれていたら、両方のパネルを自動で閉じる
+        if (selectionMenuOpen)
         {
-            HidePanel();
+            if (_wantVisible)
+                HidePanel();
+            if (_craftVisible)
+                HideCraftPanel();
         }
 
-        // 範囲選択メニューが開いている間は、Eキーでの操作は無効
+        // 範囲選択メニューが開いている間は、E/Qキーでの操作は無効
         if (!selectionMenuOpen)
         {
 #if ENABLE_INPUT_SYSTEM
             var kb = Keyboard.current;
-            if (kb != null && kb.eKey.wasPressedThisFrame)
+            if (kb != null)
             {
-                TogglePanel();
+                if (kb.eKey.wasPressedThisFrame)
+                {
+                    TogglePanel();
+                }
+                if (kb.qKey.wasPressedThisFrame)
+                {
+                    ToggleCraftPanel();
+                }
             }
 #else
             if (Input.GetKeyDown(KeyCode.E))
             {
                 TogglePanel();
             }
+            if (Input.GetKeyDown(KeyCode.Q))
+            {
+                ToggleCraftPanel();
+            }
 #endif
         }
 
-        // フェード進行
+        // インベントリパネル側フェード進行
         UpdateFade();
 
-        // 開いている間は定期的にリスト更新
+        // インベントリパネルが開いている間は定期的にリスト更新
         if (panel != null && panel.activeSelf && _wantVisible)
         {
             if (refreshInterval <= 0f)
@@ -165,17 +210,28 @@ public class InventoryUI : MonoBehaviour
                 }
             }
         }
+
+        // クラフトパネルが開いている間も、内容を都度更新しておく
+        if (craftPanel != null && craftPanel.activeSelf && _craftVisible)
+        {
+            RefreshCraftScreenList();
+        }
     }
 
+    // Eキー：インベントリパネル
     void TogglePanel()
     {
         if (panel == null || listRoot == null || rowPrefab == null)
             return;
 
-        if (_wantVisible)
-            HidePanel();
-        else
+        if (!_wantVisible)
+        {
             ShowPanel();
+        }
+        else
+        {
+            HidePanel();
+        }
     }
 
     void ShowPanel()
@@ -216,15 +272,12 @@ public class InventoryUI : MonoBehaviour
             return;
 
         _fadeTime += Time.deltaTime;
-        float t = (fadeDuration > 0f) ? Mathf.Clamp01(_fadeTime / fadeDuration) : 1f;
-        float a = Mathf.Lerp(_fadeStartAlpha, _fadeTargetAlpha, t);
-        _canvasGroup.alpha = a;
+        float t = Mathf.Clamp01(_fadeTime / fadeDuration);
+        _canvasGroup.alpha = Mathf.Lerp(_fadeStartAlpha, _fadeTargetAlpha, t);
 
         if (t >= 1f)
         {
             _isFading = false;
-            _canvasGroup.alpha = _fadeTargetAlpha;
-
             if (_fadeTargetAlpha <= 0f)
             {
                 panel.SetActive(false);
@@ -232,12 +285,49 @@ public class InventoryUI : MonoBehaviour
         }
     }
 
+    // Qキー：クラフトパネル
+    void ToggleCraftPanel()
+    {
+        if (craftPanel == null)
+            return;
+
+        if (_craftVisible)
+        {
+            HideCraftPanel();
+        }
+        else
+        {
+            ShowCraftPanel();
+        }
+    }
+
+    void ShowCraftPanel()
+    {
+        if (craftPanel == null)
+            return;
+
+        _craftVisible = true;
+        craftPanel.SetActive(true);
+
+        RefreshCraftScreenList();
+    }
+
+    void HideCraftPanel()
+    {
+        if (craftPanel == null)
+            return;
+
+        _craftVisible = false;
+        craftPanel.SetActive(false);
+    }
+
+    // インベントリパネル内のアイテム＋建物ボタン
     void RefreshList()
     {
         if (listRoot == null || rowPrefab == null)
             return;
 
-        // 既存行を全部削除
+        // アイテム行を全部削除
         for (int i = listRoot.childCount - 1; i >= 0; i--)
         {
             Destroy(listRoot.GetChild(i).gameObject);
@@ -248,7 +338,14 @@ public class InventoryUI : MonoBehaviour
             return;
 
         var inv = dm.GlobalInventory;
+        if (inv == null || inv.Count == 0)
+        {
+            // 何もないときでも建物リストは更新しておく
+            RefreshInventoryBuildList();
+            return;
+        }
 
+        // ソートして表示
         var sorted = new List<KeyValuePair<string, int>>(inv);
         sorted.Sort((a, b) => string.Compare(a.Key, b.Key, System.StringComparison.Ordinal));
 
@@ -285,15 +382,17 @@ public class InventoryUI : MonoBehaviour
 
             if (txt != null)
             {
-                txt.text = $"{itemName} x {count}";
+                // 個数だけを表示
+                txt.text = count.ToString();
             }
         }
 
-        // ★追加：建物クラフトリストも更新
-        RefreshCraftList();
+        // インベントリ内の建物ボタン（ゴースト選択用）も更新
+        RefreshInventoryBuildList();
     }
 
-    void RefreshCraftList()
+    // Eキー側：インベントリパネル内の建物ボタン（ゴースト選択）
+    void RefreshInventoryBuildList()
     {
         if (craftListRoot == null || craftRowPrefab == null)
             return;
@@ -302,8 +401,7 @@ public class InventoryUI : MonoBehaviour
         if (dm == null)
             return;
 
-        // --- 行数が変わっていたら作り直し（頻繁には変わらない前提） ---
-        bool needRebuild = (_craftRows.Count != craftableBuildings.Count) ||
+        bool needRebuild = (_inventoryBuildRows.Count != craftableBuildings.Count) ||
                            (craftListRoot.childCount != craftableBuildings.Count);
 
         if (needRebuild)
@@ -313,7 +411,7 @@ public class InventoryUI : MonoBehaviour
             {
                 Destroy(craftListRoot.GetChild(i).gameObject);
             }
-            _craftRows.Clear();
+            _inventoryBuildRows.Clear();
 
             // craftableBuildings の数だけ新しく作る
             foreach (var def in craftableBuildings)
@@ -342,7 +440,95 @@ public class InventoryUI : MonoBehaviour
                 if (cache.button == null)
                     cache.button = rowGO.GetComponentInChildren<Button>();
 
-                // ボタンイベントはここで一度だけ登録
+                if (cache.button != null)
+                {
+                    var capturedDef = def;
+                    cache.button.onClick.RemoveAllListeners();
+                    // インベントリ側はゴースト選択
+                    cache.button.onClick.AddListener(() => OnClickSelectBuilding(capturedDef));
+                }
+
+                _inventoryBuildRows.Add(cache);
+            }
+        }
+
+        // 内容の更新だけ
+        for (int i = 0; i < _inventoryBuildRows.Count && i < craftableBuildings.Count; i++)
+        {
+            var cache = _inventoryBuildRows[i];
+            var def = craftableBuildings[i];
+            if (def == null || cache.root == null) continue;
+
+            cache.def = def;
+
+            if (cache.icon != null)
+            {
+                cache.icon.sprite = def.icon;
+                cache.icon.enabled = (cache.icon.sprite != null);
+            }
+
+            int kitCount = dm.GetCraftedBuildingCount(def);
+
+            if (cache.label != null)
+            {
+                // 所持しているキット数だけを数字で表示
+                cache.label.text = kitCount.ToString();
+            }
+
+            if (cache.button != null)
+            {
+                cache.button.interactable = true;
+            }
+        }
+    }
+
+    // Qキー側：クラフト専用パネル内の建物ボタン
+    void RefreshCraftScreenList()
+    {
+        if (craftScreenListRoot == null || craftScreenRowPrefab == null)
+            return;
+
+        var dm = DroneBuildManager.Instance;
+        if (dm == null)
+            return;
+
+        bool needRebuild = (_craftScreenRows.Count != craftableBuildings.Count) ||
+                           (craftScreenListRoot.childCount != craftableBuildings.Count);
+
+        if (needRebuild)
+        {
+            for (int i = craftScreenListRoot.childCount - 1; i >= 0; i--)
+            {
+                Destroy(craftScreenListRoot.GetChild(i).gameObject);
+            }
+            _craftScreenRows.Clear();
+
+            foreach (var def in craftableBuildings)
+            {
+                if (def == null) continue;
+
+                var rowGO = Instantiate(craftScreenRowPrefab, craftScreenListRoot);
+
+                var cache = new CraftRowCache();
+                cache.def = def;
+                cache.root = rowGO;
+
+                var iconTr = rowGO.transform.Find("Icon");
+                if (iconTr != null)
+                    cache.icon = iconTr.GetComponent<Image>();
+
+                var labelTr = rowGO.transform.Find("Label");
+                if (labelTr == null)
+                    labelTr = rowGO.transform.Find("Content");
+                if (labelTr != null)
+                    cache.label = labelTr.GetComponent<TMP_Text>();
+
+                var btnTr = rowGO.transform.Find("CraftButton");
+                if (btnTr != null)
+                    cache.button = btnTr.GetComponent<Button>();
+                if (cache.button == null)
+                    cache.button = rowGO.GetComponentInChildren<Button>();
+
                 if (cache.button != null)
                 {
                     var capturedDef = def;
@@ -350,18 +536,16 @@ public class InventoryUI : MonoBehaviour
                     cache.button.onClick.AddListener(() => OnClickCraftBuilding(capturedDef));
                 }
 
-                _craftRows.Add(cache);
+                _craftScreenRows.Add(cache);
             }
         }
 
-        // --- 表示内容の更新だけ行う（Destroy/Instantiate はしない） ---
-        for (int i = 0; i < _craftRows.Count && i < craftableBuildings.Count; i++)
+        for (int i = 0; i < _craftScreenRows.Count && i < craftableBuildings.Count; i++)
         {
-            var cache = _craftRows[i];
+            var cache = _craftScreenRows[i];
             var def = craftableBuildings[i];
             if (def == null || cache.root == null) continue;
 
-            // def が差し替えられていた場合に備えて更新しておく
             cache.def = def;
 
             if (cache.icon != null)
@@ -375,7 +559,7 @@ public class InventoryUI : MonoBehaviour
 
             if (cache.label != null)
             {
-                cache.label.text = kitCount.ToString();   // ★数字だけ
+                cache.label.text = kitCount.ToString();
             }
 
             if (cache.button != null)
@@ -385,6 +569,32 @@ public class InventoryUI : MonoBehaviour
         }
     }
 
+    // インベントリ側：建物ボタン → ゴースト選択
+    void OnClickSelectBuilding(BuildingDef def)
+    {
+        if (def == null) return;
+
+        if (buildPlacement == null)
+        {
+            buildPlacement = FindFirstObjectByType<BuildPlacement>();
+            if (buildPlacement == null)
+            {
+                Debug.LogWarning("[InventoryUI] BuildPlacement が見つからないため、ゴーストプレビューを出せません。");
+                return;
+            }
+        }
+
+        // ★ インベントリから選んだときも「建築モード開始」扱いにしてロック解除する
+        SelectionBoxDrawer.NotifyBuildModeStartedFromOutside();
+
+        // 選択した建物を建築対象にセット（BuildBarUI.Select と同じ流れ）
+        buildPlacement.SetSelected(def);
+
+        // ゴースト選択後はインベントリパネルを閉じておく
+        HidePanel();
+    }
+
+    // クラフト画面：建物ボタン → キットをクラフト
     void OnClickCraftBuilding(BuildingDef def)
     {
         var dm = DroneBuildManager.Instance;
@@ -396,8 +606,9 @@ public class InventoryUI : MonoBehaviour
             return;
         }
 
-        // 素材在庫 & キット在庫が変わるので、一覧を更新
+        // 素材在庫 & キット在庫が変わるので、両方のリストを更新
         RefreshList();
+        RefreshCraftScreenList();
     }
 
     Sprite FindIcon(string itemName)
