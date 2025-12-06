@@ -1,4 +1,4 @@
-﻿﻿using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Tilemaps;
@@ -99,6 +99,25 @@ public class BuildPlacement : MonoBehaviour
 
     [Tooltip("四角グリッド用アイコンの高さオフセット")]
     public float fineDemolitionIconYOffset = 0.6f;
+
+    [Header("=== Build Icon ===")]
+    [Tooltip("六角タイル / Big グリッド用の建築中アイコン")]
+    public Sprite hexBuildIconSprite;
+
+    [Tooltip("細かい四角グリッド用の建築中アイコン")]
+    public Sprite fineBuildIconSprite;
+
+    [Tooltip("六角タイル用 建築アイコンの基準スケール")]
+    public float hexBuildIconScale = 1f;
+
+    [Tooltip("四角グリッド用 建築アイコンの基準スケール")]
+    public float fineBuildIconScale = 1f;
+
+    [Tooltip("六角タイル用 建築アイコンの高さオフセット")]
+    public float hexBuildIconYOffset = 0.6f;
+
+    [Tooltip("四角グリッド用 建築アイコンの高さオフセット")]
+    public float fineBuildIconYOffset = 0.6f;
 
 
     // 連続設置中かどうか
@@ -658,6 +677,9 @@ public class BuildPlacement : MonoBehaviour
         // アイコンを消す（念のため）
         RemoveDemolitionIcon(target);
 
+        // 建築アイコンも消しておく
+        RemoveBuildIcon(target);
+
         // グリッド辞書から消す
         _placedByCell.Remove(cell);
 
@@ -701,6 +723,9 @@ public class BuildPlacement : MonoBehaviour
 
         if (ghost != null)
         {
+            // 建築アイコンを消す
+            RemoveBuildIcon(ghost);
+
             SetSpriteColor(ghost.transform, Color.white);
             foreach (var c in ghost.GetComponentsInChildren<Collider2D>(true))
                 c.enabled = true;
@@ -956,6 +981,9 @@ public class BuildPlacement : MonoBehaviour
 
     public void FinalizeFineDemolish(Vector2Int fcell, GameObject target)
     {
+        // 建築アイコンも消しておく
+        RemoveBuildIcon(target);
+
         // この建物に紐づいているすべてのセルを削除
         var keysToRemove = new List<Vector2Int>();
         foreach (var kv in _placedFine)
@@ -976,6 +1004,8 @@ public class BuildPlacement : MonoBehaviour
     public void FinalizeFinePlacement(BuildingDef def, Vector2Int fcell, Vector3 pos, GameObject ghost)
     {
         if (ghost == null) return;
+        // 建築アイコンを消す
+        RemoveBuildIcon(ghost);
 
         SetSpriteColor(ghost.transform, Color.white);
         foreach (var c in ghost.GetComponentsInChildren<Collider2D>(true)) c.enabled = true;
@@ -1058,14 +1088,19 @@ public class BuildPlacement : MonoBehaviour
         if (!useDroneBuild || droneManager == null) return;
         if (_plannedGhosts.Count == 0) return;
 
-        // Space が押された瞬間に存在していた「計画中ゴースト」のスナップショットを取る
+        // 今ある計画中ゴーストをスナップショットしてからクリア
         var snapshot = new List<PlannedGhost>(_plannedGhosts);
         _plannedGhosts.Clear();
 
         foreach (var g in snapshot)
         {
-            if (g.def == null || g.ghostGO == null) continue;
+            if (g.def == null || g.ghostGO == null)
+            {
+                // 壊れているゴーストは捨てる
+                continue;
+            }
 
+            // ★どんなゴーストでも必ずキューに流す（キットの有無はここでは見ない）
             if (g.isFine)
             {
                 droneManager.EnqueueFineBuild(this, g.def, g.fineCell, g.worldPos, g.ghostGO);
@@ -1074,6 +1109,9 @@ public class BuildPlacement : MonoBehaviour
             {
                 droneManager.EnqueueBigBuild(this, g.def, g.bigCell, g.worldPos, g.ghostGO);
             }
+
+            // ★確定されたゴーストすべてに建築アイコン(MinigIcon)を付ける
+            AddBuildIcon(g.ghostGO, g.isFine);
         }
     }
 
@@ -1191,6 +1229,107 @@ public class BuildPlacement : MonoBehaviour
         }
     }
 
+    // ============================================================
+    // ★ 建築アイコンの追加・削除
+    // ============================================================
+    void RemoveBuildIcon(GameObject target)
+    {
+        if (target == null) return;
+
+        var root = target.transform.Find("BuildIconRoot");
+        if (root != null)
+        {
+            Destroy(root.gameObject);
+        }
+    }
+
+    void AddBuildIcon(GameObject target, bool isFineGrid)
+    {
+        if (target == null) return;
+
+        // スプライトが設定されていなければ何もしない
+        Sprite sprite = isFineGrid ? fineBuildIconSprite : hexBuildIconSprite;
+        if (sprite == null) return;
+
+        // 既存アイコンを消す
+        var oldRoot = target.transform.Find("BuildIconRoot");
+        if (oldRoot != null)
+            Destroy(oldRoot.gameObject);
+
+        GameObject root = new GameObject("BuildIconRoot");
+        root.transform.SetParent(target.transform, false);
+        root.transform.localPosition = Vector3.zero;
+
+        var parentScale = target.transform.lossyScale;
+        float invX = (parentScale.x != 0f) ? 1f / parentScale.x : 1f;
+        float invY = (parentScale.y != 0f) ? 1f / parentScale.y : 1f;
+
+        if (!isFineGrid)
+        {
+            // ★ 六角 / Big グリッドは今まで通り「中心に1個」
+            float yOffset = hexBuildIconYOffset;
+            float scale = hexBuildIconScale;
+
+            var icon = new GameObject("BuildIcon");
+            icon.transform.SetParent(root.transform, false);
+            icon.transform.localPosition = new Vector3(0f, yOffset, 0f);
+
+            var sr = icon.AddComponent<SpriteRenderer>();
+            sr.sprite = sprite;
+            sr.sortingOrder = 998;   // 解体アイコン(999)より一段下
+
+            icon.transform.localScale = new Vector3(invX, invY, 1f) * scale;
+        }
+        else
+        {
+            // ★ Fine グリッドは「占有しているすべての Fine セル」に配置
+            float yOffset = fineBuildIconYOffset;
+            float scale = fineBuildIconScale;
+
+            // この target が占有している Fine セルを集める
+            var usedCells = new HashSet<Vector2Int>();
+            foreach (var kv in _placedFine)
+            {
+                if (kv.Value == target)
+                    usedCells.Add(kv.Key);
+            }
+
+            // 念のため、0件だった場合は中央に1個だけ置くフォールバック
+            if (usedCells.Count == 0)
+            {
+                var icon = new GameObject("BuildIcon");
+                icon.transform.SetParent(root.transform, false);
+                icon.transform.localPosition = new Vector3(0f, yOffset, 0f);
+
+                var sr = icon.AddComponent<SpriteRenderer>();
+                sr.sprite = sprite;
+                sr.sortingOrder = 998;
+
+                icon.transform.localScale = new Vector3(invX, invY, 1f) * scale;
+                return;
+            }
+
+            // 各セルの中心にアイコンを配置
+            foreach (var cell in usedCells)
+            {
+                Vector3 cellWorld = FineCellToWorld(cell, fineCellSize);
+                cellWorld.y += yOffset;
+
+                // 建物ローカル座標に変換
+                Vector3 localPos = target.transform.InverseTransformPoint(cellWorld);
+
+                var icon = new GameObject("BuildIcon");
+                icon.transform.SetParent(root.transform, false);
+                icon.transform.localPosition = localPos;
+
+                var sr = icon.AddComponent<SpriteRenderer>();
+                sr.sprite = sprite;
+                sr.sortingOrder = 998;
+
+                icon.transform.localScale = new Vector3(invX, invY, 1f) * scale;
+            }
+        }
+    }
 
     void DeleteAtFine(Vector2Int fcell, Vector3 worldCenter)
     {

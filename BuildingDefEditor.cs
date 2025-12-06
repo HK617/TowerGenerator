@@ -9,117 +9,133 @@ public class BuildingDefEditor : Editor
     SerializedProperty prefab;
     SerializedProperty isHexTile;
     SerializedProperty hotkey;
+    SerializedProperty buildByCraftedKit;
     SerializedProperty cellsWidth;
     SerializedProperty cellsHeight;
     SerializedProperty rebuildAfterPlace;
     SerializedProperty allowRotation;
     SerializedProperty buildCostsProp;
 
-    BuildingDef def;
-
     void OnEnable()
     {
-        serializedObject.Update();
-
-        def = (BuildingDef)target;
         displayName = serializedObject.FindProperty("displayName");
         icon = serializedObject.FindProperty("icon");
         prefab = serializedObject.FindProperty("prefab");
         isHexTile = serializedObject.FindProperty("isHexTile");
         hotkey = serializedObject.FindProperty("hotkey");
+        buildByCraftedKit = serializedObject.FindProperty("buildByCraftedKit");
         cellsWidth = serializedObject.FindProperty("cellsWidth");
         cellsHeight = serializedObject.FindProperty("cellsHeight");
         rebuildAfterPlace = serializedObject.FindProperty("rebuildAfterPlace");
         allowRotation = serializedObject.FindProperty("allowRotation");
         buildCostsProp = serializedObject.FindProperty("buildCosts");
-
-        serializedObject.ApplyModifiedProperties();
-
-        // シリアライズされたデータ → 実体配列 に起こす
-        def.RestoreShape();
     }
 
     public override void OnInspectorGUI()
     {
         serializedObject.Update();
 
+        var def = (BuildingDef)target;
+        if (def == null)
+            return;
+
+        // ==== UI 表示 ====
+        EditorGUILayout.LabelField("UI 表示", EditorStyles.boldLabel);
         EditorGUILayout.PropertyField(displayName);
         EditorGUILayout.PropertyField(icon);
-        EditorGUILayout.PropertyField(prefab);
-        EditorGUILayout.PropertyField(isHexTile);
-        EditorGUILayout.PropertyField(hotkey);
-        EditorGUILayout.PropertyField(allowRotation);
 
-        EditorGUILayout.Space(10);
-        EditorGUILayout.LabelField("FlowField Block Shape", EditorStyles.boldLabel);
-        EditorGUILayout.HelpBox("赤=ブロック(通行不可)、緑=通行可。\nグリッドサイズは奇数・偶数どちらも選択可。", MessageType.Info);
-
-        // 今のサイズ
-        int currentSize = def.GetShapeSize();
-
-        // サイズ選択
-        int[] sizeOptions = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 20 };
-        string[] sizeLabels = { "1×1", "2×2", "3×3", "4×4", "5×5", "6×6", "7×7", "8×8", "9×9", "20×20" };
-        int newSize = EditorGUILayout.IntPopup("Grid Size", currentSize, sizeLabels, sizeOptions);
-
-        if (newSize != currentSize)
-        {
-            if (EditorUtility.DisplayDialog(
-                "Grid Size Change",
-                $"グリッドを {currentSize}×{currentSize} から {newSize}×{newSize} に変更します。\n既存の形状データは消去されます。",
-                "OK", "キャンセル"))
-            {
-                Undo.RecordObject(def, "Resize Shape");
-                def.RecreateShape(newSize, defaultValue: true);
-                EditorUtility.SetDirty(def);
-            }
-        }
-
-        DrawShapeGrid();
-
-        EditorGUILayout.Space(10);
-        EditorGUILayout.PropertyField(cellsWidth);
-        EditorGUILayout.PropertyField(cellsHeight);
-        EditorGUILayout.PropertyField(rebuildAfterPlace);
-
+        // ==== プレハブ ====
         EditorGUILayout.Space();
-        EditorGUILayout.LabelField("Build Cost", EditorStyles.boldLabel);
-        EditorGUILayout.PropertyField(buildCostsProp, true);   // true でリスト展開表示
+        EditorGUILayout.LabelField("プレハブ", EditorStyles.boldLabel);
+        EditorGUILayout.PropertyField(prefab);
+
+        // ==== フラグ / 基本 ====
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("フラグ / 基本設定", EditorStyles.boldLabel);
+        EditorGUILayout.PropertyField(isHexTile, new GUIContent("Is Hex Tile"));
+        EditorGUILayout.PropertyField(hotkey, new GUIContent("Hotkey"));
+        EditorGUILayout.PropertyField(
+            buildByCraftedKit,
+            new GUIContent(
+                "Build By Crafted Kit",
+                "ON にすると、この建物はクラフトで作ったキットを消費して建てます。"
+            )
+        );
+        EditorGUILayout.PropertyField(allowRotation, new GUIContent("Allow Rotation"));
+        EditorGUILayout.PropertyField(rebuildAfterPlace, new GUIContent("Rebuild FlowField After Place"));
+
+        // ==== 形状 ====
+        EditorGUILayout.Space();
+        DrawShapeEditor(def);
+
+        // ==== 建築コスト ====
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("建築コスト", EditorStyles.boldLabel);
+        EditorGUILayout.PropertyField(buildCostsProp, includeChildren: true);
 
         serializedObject.ApplyModifiedProperties();
-
-        if (GUI.changed)
-            EditorUtility.SetDirty(def);
     }
 
-    void DrawShapeGrid()
+    void DrawShapeEditor(BuildingDef def)
     {
-        def.RestoreShape();
+        EditorGUILayout.LabelField("FlowField Block Shape", EditorStyles.boldLabel);
+        EditorGUILayout.PropertyField(cellsWidth, new GUIContent("Cells Width"));
+        EditorGUILayout.PropertyField(cellsHeight, new GUIContent("Cells Height"));
+
+        if (def.shape == null)
+        {
+            def.RestoreShape();
+        }
+
+        int gridSize = Mathf.Max(1, def.GetShapeSize());
+
+        // グリッドサイズ変更
+        int newSize = EditorGUILayout.IntSlider("Shape Size", gridSize, 1, 9);
+        if (newSize != gridSize)
+        {
+            Undo.RecordObject(def, "Change Shape Size");
+            def.RecreateShape(newSize, true);
+            EditorUtility.SetDirty(def);
+            gridSize = newSize;
+        }
+
         var shape = def.shape;
-        if (shape == null) return;
-        int gridSize = shape.GetLength(0);
+        if (shape == null)
+        {
+            def.RestoreShape();
+            shape = def.shape;
+            if (shape == null)
+                return;
+        }
 
         GUILayout.BeginVertical("box");
-        GUILayout.Label($"Shape ({gridSize}×{gridSize}):", EditorStyles.boldLabel);
+        GUILayout.Label($"Shape ({gridSize}×{gridSize})", EditorStyles.boldLabel);
 
         float boxSize = Mathf.Clamp(150f / gridSize, 12f, 30f);
         Color oldColor = GUI.backgroundColor;
+        Color onColor = new Color(0.3f, 0.8f, 1.0f);
+        Color offColor = new Color(0.15f, 0.15f, 0.15f);
 
-        // yを上から描画したいので逆順
+        // y を上から描画したいので逆順
         for (int y = gridSize - 1; y >= 0; y--)
         {
             GUILayout.BeginHorizontal();
             for (int x = 0; x < gridSize; x++)
             {
                 bool val = shape[x, y];
-                GUI.backgroundColor = val ? new Color(1f, 0.4f, 0.4f) : new Color(0.4f, 1f, 0.4f);
+                GUI.backgroundColor = val ? onColor : offColor;
 
-                bool newVal = GUILayout.Toggle(val, "", "Button",
-                    GUILayout.Width(boxSize), GUILayout.Height(boxSize));
+                bool newVal = GUILayout.Toggle(
+                    val,
+                    GUIContent.none,
+                    "Button",
+                    GUILayout.Width(boxSize),
+                    GUILayout.Height(boxSize)
+                );
 
                 if (newVal != val)
                 {
-                    Undo.RecordObject(def, "Change Shape");
+                    Undo.RecordObject(def, "Toggle Shape Cell");
                     def.SetShapeCell(x, y, newVal);
                     EditorUtility.SetDirty(def);
                 }

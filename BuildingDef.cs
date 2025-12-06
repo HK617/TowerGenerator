@@ -15,6 +15,10 @@ public class BuildingDef : ScriptableObject
     public bool isHexTile = false;
     [Range(1, 9)] public int hotkey = 1;
 
+    // ★追加：クラフトキット方式で建てる建物かどうか
+    [Tooltip("ON にすると、この建物はクラフトで作ったキットを消費して建ちます。")]
+    public bool buildByCraftedKit = false;
+
     [Header("FlowField Block Shape")]
     [Tooltip("この建物が占有するセル範囲 (cellSize単位)。たとえば 0.25×0.25 セルなら 1×1、0.5×0.5 なら 2×2。")]
     public int cellsWidth = 1;

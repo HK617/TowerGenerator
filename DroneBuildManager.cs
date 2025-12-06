@@ -146,6 +146,68 @@ public class DroneBuildManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// 建築タスク t について、
+    /// 「この建物にまだ必要な素材 or キット」が Base に1つでもあるか？
+    /// </summary>
+    bool HasRemainingResourceForBuildTask(BuildTask t)
+    {
+        if (t == null || t.def == null)
+            return false;
+
+        var def = t.def;
+
+        // ① buildByCraftedKit の建物 → キット在庫を見る
+        if (def.buildByCraftedKit)
+        {
+            // クラフト済みキットの在庫が 1 個でもあれば true
+            return GetCraftedBuildingCount(def) > 0;
+        }
+
+        // ② 通常建築 → ConstructionState で「残り必要数」を見て、
+        //    まだ必要な itemName について _globalInventory に在庫があるか調べる
+        if (def.buildCosts == null || def.buildCosts.Count == 0)
+            return false;
+
+        ConstructionState cons = null;
+        if (t.ghost != null)
+        {
+            cons = t.ghost.GetComponent<ConstructionState>();
+            if (cons != null)
+            {
+                cons.EnsureInitialized(def);
+            }
+        }
+
+        foreach (var cost in def.buildCosts)
+        {
+            if (cost == null) continue;
+            if (string.IsNullOrEmpty(cost.itemName)) continue;
+            if (cost.amount <= 0) continue;
+
+            int delivered = 0;
+            if (cons != null)
+            {
+                delivered = cons.GetDeliveredAmount(cost.itemName);
+            }
+
+            int remainingNeed = cost.amount - delivered;
+            if (remainingNeed <= 0)
+                continue; // この素材はもう十分納品済み
+
+            // まだ必要な素材についてだけ Base 在庫を見る
+            int have = 0;
+            _globalInventory.TryGetValue(cost.itemName, out have);
+            if (have > 0)
+            {
+                return true;    // 本当に必要な素材が 1 つはある
+            }
+        }
+
+        // どの必要素材も Base に無い
+        return false;
+    }
+
     // ★ 追加：指定の ResourceMarker に対する採掘ターゲット座標をすべて取得
     public bool TryGetMiningTargets(ResourceMarker marker, List<Vector3> results)
     {
@@ -333,28 +395,16 @@ public class DroneBuildManager : MonoBehaviour
                 task.kind == TaskKind.BigBuild ||
                 task.kind == TaskKind.FineBuild;
 
-            bool hasAnyResource = false;          // Base に必要素材があるか
-            bool hasCargoBuilderForTask = false;  // すでにこの建物用の素材を積んでいるドローンがいるか
+            bool hasAnyResource = false;          // Base に「まだ必要な」素材/キットがあるか
+            bool hasCargoBuilderForTask = false;  // すでにこの建物用の素材/キットを積んでいるドローンがいるか
 
             // ---------- 建築タスクの場合の素材チェック ----------
-            if (isBuildTask && task.def != null && task.def.buildCosts != null)
+            if (isBuildTask && task.def != null)
             {
-                // 1) Base のインベントリに 1 個でも必要素材があるか？
-                foreach (var cost in task.def.buildCosts)
-                {
-                    if (cost == null) continue;
-                    if (string.IsNullOrEmpty(cost.itemName)) continue;
-                    if (cost.amount <= 0) continue;
+                // 1) Base に「この建物の、まだ必要な素材 or キット」があるか？
+                hasAnyResource = HasRemainingResourceForBuildTask(task);
 
-                    int have = 0;
-                    if (_globalInventory.TryGetValue(cost.itemName, out have) && have > 0)
-                    {
-                        hasAnyResource = true;
-                        break;
-                    }
-                }
-
-                // 2) すでにこの建物に使える素材を積んでいるドローンがいるか？
+                // 2) すでにこの建物に使える素材/キットを積んでいるドローンがいるか？
                 foreach (var worker in _drones)
                 {
                     if (worker == null) continue;
@@ -368,10 +418,10 @@ public class DroneBuildManager : MonoBehaviour
                     }
                 }
 
-                // 3) Base にもドローンにも素材がないなら、今回は後回し
+                // 3) Base にもドローンにも「この建物に使える素材」が 1 つもない
+                //    → 今はこのタスクを誰にも渡さず、キューの後ろに回すだけ
                 if (!hasAnyResource && !hasCargoBuilderForTask)
                 {
-                    // この建物に使う素材が、Base にもどのドローンにも 1 個もない → まだ割り当てない
                     _queue.Enqueue(task);
                     continue;
                 }
@@ -516,7 +566,10 @@ public class DroneBuildManager : MonoBehaviour
                         task.def.buildCosts != null &&
                         task.def.buildCosts.Count > 0;
 
-                    if (hasCost)
+                    // ★クラフトキット式の建物は ConstructionState のコスト判定をスキップ
+                    bool skipCostByKit = (task.def != null && task.def.buildByCraftedKit);
+
+                    if (hasCost && !skipCostByKit)
                     {
                         var ghost = task.ghost;
                         if (ghost == null)
@@ -631,6 +684,103 @@ public class DroneBuildManager : MonoBehaviour
 
     // 全体の所有アイテム（Key: アイテム名, Value: 個数）
     Dictionary<string, int> _globalInventory = new Dictionary<string, int>();
+
+    // ★追加：クラフト済み建物（建築キット）の在庫
+    //   Key: BuildingDef.name, Value: 所持数
+    Dictionary<string, int> _craftedBuildings = new Dictionary<string, int>();
+
+    // ★ ドローンが持ち帰った建築素材を Base 在庫に戻す
+    public void ReturnBuildMaterials(Dictionary<string, int> items)
+    {
+        if (items == null || items.Count == 0) return;
+
+        foreach (var kv in items)
+        {
+            if (kv.Value <= 0) continue;
+            if (string.IsNullOrEmpty(kv.Key)) continue;
+
+            int cur = 0;
+            _globalInventory.TryGetValue(kv.Key, out cur);
+            _globalInventory[kv.Key] = cur + kv.Value;
+        }
+    }
+
+    // ★ ドローンが持ち帰った建築キットを Base 在庫に戻す
+    public void ReturnCraftedKits(Dictionary<BuildingDef, int> kits)
+    {
+        if (kits == null || kits.Count == 0) return;
+
+        foreach (var kv in kits)
+        {
+            var def = kv.Key;
+            int amount = kv.Value;
+            if (def == null) continue;
+            if (amount <= 0) continue;
+
+            // 既存の「キット在庫」に足す
+            AddCraftedBuilding(def, amount);
+        }
+    }
+
+    // ★クラフト済み建物の在庫数を取得
+    public int GetCraftedBuildingCount(BuildingDef def)
+    {
+        if (def == null) return 0;
+        int v;
+        if (_craftedBuildings.TryGetValue(def.name, out v))
+            return v;
+        return 0;
+    }
+
+    // ★内部用：キットを追加
+    void AddCraftedBuilding(BuildingDef def, int amount)
+    {
+        if (def == null) return;
+        if (amount <= 0) return;
+
+        int cur = GetCraftedBuildingCount(def);
+        _craftedBuildings[def.name] = cur + amount;
+    }
+
+    // ★キットを1個消費（在庫があれば true / 無ければ false）
+    public bool TryConsumeCraftedBuilding(BuildingDef def)
+    {
+        if (def == null) return false;
+
+        int cur;
+        if (!_craftedBuildings.TryGetValue(def.name, out cur) || cur <= 0)
+            return false;
+
+        cur--;
+        if (cur > 0)
+            _craftedBuildings[def.name] = cur;
+        else
+            _craftedBuildings.Remove(def.name);
+
+        return true;
+    }
+
+    /// <summary>
+    /// 指定の BuildingDef のクラフトキットを、Base の在庫から最大 maxTotal 個まで消費する。
+    /// 実際に消費できた個数を返す。
+    /// </summary>
+    public int ConsumeCraftedBuildings(BuildingDef def, int maxTotal)
+    {
+        if (def == null) return 0;
+        if (maxTotal <= 0) return 0;
+
+        int taken = 0;
+
+        for (int i = 0; i < maxTotal; i++)
+        {
+            if (!TryConsumeCraftedBuilding(def))
+                break;
+
+            taken++;
+        }
+
+        return taken;
+    }
 
     /// <summary>
     /// Base に納品されたアイテムを全体在庫に加算する
@@ -840,6 +990,72 @@ public class DroneBuildManager : MonoBehaviour
                 _globalInventory.Remove(cost.itemName);
         }
 
+        return true;
+    }
+
+    // ========================================
+    // クラフト関連
+    // ========================================
+
+    /// <summary>
+    /// 現在の Base 在庫だけで、指定建物を count 個クラフトできるか？
+    /// 在庫を減らさずにチェックだけする。
+    /// </summary>
+    public bool CanCraftBuilding(BuildingDef def, int count)
+    {
+        if (def == null) return false;
+        if (count <= 0) return false;
+        if (def.buildCosts == null || def.buildCosts.Count == 0)
+            return false;
+
+        foreach (var cost in def.buildCosts)
+        {
+            if (cost == null) continue;
+            if (string.IsNullOrEmpty(cost.itemName)) continue;
+            if (cost.amount <= 0) continue;
+
+            int have = 0;
+            _globalInventory.TryGetValue(cost.itemName, out have);
+
+            // 必要数 = 1個あたりのコスト × クラフト個数
+            long need = (long)cost.amount * (long)count;
+            if (have < need)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 実際に在庫を消費して、建築キットを count 個クラフトする。
+    /// 在庫が足りない場合は何もせず false。
+    /// </summary>
+    public bool TryCraftBuilding(BuildingDef def, int count)
+    {
+        // まずチェックだけ
+        if (!CanCraftBuilding(def, count))
+            return false;
+
+        // ここから在庫を実際に減らす
+        foreach (var cost in def.buildCosts)
+        {
+            if (cost == null) continue;
+            if (string.IsNullOrEmpty(cost.itemName)) continue;
+            if (cost.amount <= 0) continue;
+
+            int have = 0;
+            _globalInventory.TryGetValue(cost.itemName, out have);
+
+            long need = (long)cost.amount * (long)count;
+            int next = (int)(have - need);
+            if (next > 0)
+                _globalInventory[cost.itemName] = next;
+            else
+                _globalInventory.Remove(cost.itemName);
+        }
+
+        // キット在庫を追加
+        AddCraftedBuilding(def, count);
         return true;
     }
 

@@ -45,6 +45,28 @@ public class InventoryUI : MonoBehaviour
 
     Dictionary<string, Sprite> _iconLookup = new();
 
+    [Header("Craft (Building Kits)")]
+    [Tooltip("クラフト可能な建物リスト")]
+    public List<BuildingDef> craftableBuildings = new();
+
+    // クラフト行をキャッシュして、毎フレーム Destroy/Instantiate しないようにする
+    class CraftRowCache
+    {
+        public BuildingDef def;
+        public GameObject root;
+        public Image icon;
+        public TMP_Text label;
+        public Button button;
+    }
+
+    List<CraftRowCache> _craftRows = new List<CraftRowCache>();
+
+    [Tooltip("建物クラフト行を並べる親 (VerticalLayoutGroup など)")]
+    public Transform craftListRoot;
+
+    [Tooltip("建物クラフト用の1行プレハブ (Icon + Label + Button)")]
+    public GameObject craftRowPrefab;
+
     CanvasGroup _canvasGroup;
     bool _wantVisible = false;   // 「論理的に開いているか」のフラグ
     bool _isFading = false;
@@ -225,37 +247,31 @@ public class InventoryUI : MonoBehaviour
         if (dm == null)
             return;
 
-        // ★ GlobalInventory = Base に納品済みの合計だけを持つ辞書
-        var inv = dm.GlobalInventory;    // IReadOnlyDictionary<string, int>:contentReference[oaicite:1]{index=1}
+        var inv = dm.GlobalInventory;
 
-        // 名前でソートして表示 (任意)
         var sorted = new List<KeyValuePair<string, int>>(inv);
         sorted.Sort((a, b) => string.Compare(a.Key, b.Key, System.StringComparison.Ordinal));
 
         foreach (var kv in sorted)
         {
-            string itemName = kv.Key;   // 例: "鉄鉱石"
+            string itemName = kv.Key;
             int count = kv.Value;
 
             var row = Instantiate(rowPrefab, listRoot);
 
-            // ★ 名前で子を探して、それぞれのコンポーネントを取る
             Image img = null;
             TMP_Text txt = null;
 
-            // 「Icon」という名前の子から Image を取る
             var iconTr = row.transform.Find("Icon");
             if (iconTr != null)
                 img = iconTr.GetComponent<Image>();
 
-            // 「Label」や「Content」など、名前に合わせて取得
             var labelTr = row.transform.Find("Label");
             if (labelTr == null)
                 labelTr = row.transform.Find("Content");
             if (labelTr != null)
                 txt = labelTr.GetComponent<TMP_Text>();
 
-            // 念のため、見つからなかったときは従来どおり
             if (img == null)
                 img = row.GetComponentInChildren<Image>();
             if (txt == null)
@@ -272,6 +288,116 @@ public class InventoryUI : MonoBehaviour
                 txt.text = $"{itemName} x {count}";
             }
         }
+
+        // ★追加：建物クラフトリストも更新
+        RefreshCraftList();
+    }
+
+    void RefreshCraftList()
+    {
+        if (craftListRoot == null || craftRowPrefab == null)
+            return;
+
+        var dm = DroneBuildManager.Instance;
+        if (dm == null)
+            return;
+
+        // --- 行数が変わっていたら作り直し（頻繁には変わらない前提） ---
+        bool needRebuild = (_craftRows.Count != craftableBuildings.Count) ||
+                           (craftListRoot.childCount != craftableBuildings.Count);
+
+        if (needRebuild)
+        {
+            // 古い行を全部削除
+            for (int i = craftListRoot.childCount - 1; i >= 0; i--)
+            {
+                Destroy(craftListRoot.GetChild(i).gameObject);
+            }
+            _craftRows.Clear();
+
+            // craftableBuildings の数だけ新しく作る
+            foreach (var def in craftableBuildings)
+            {
+                if (def == null) continue;
+
+                var rowGO = Instantiate(craftRowPrefab, craftListRoot);
+
+                var cache = new CraftRowCache();
+                cache.def = def;
+                cache.root = rowGO;
+
+                var iconTr = rowGO.transform.Find("Icon");
+                if (iconTr != null)
+                    cache.icon = iconTr.GetComponent<Image>();
+
+                var labelTr = rowGO.transform.Find("Label");
+                if (labelTr == null)
+                    labelTr = rowGO.transform.Find("Content");
+                if (labelTr != null)
+                    cache.label = labelTr.GetComponent<TMP_Text>();
+
+                var btnTr = rowGO.transform.Find("CraftButton");
+                if (btnTr != null)
+                    cache.button = btnTr.GetComponent<Button>();
+                if (cache.button == null)
+                    cache.button = rowGO.GetComponentInChildren<Button>();
+
+                // ボタンイベントはここで一度だけ登録
+                if (cache.button != null)
+                {
+                    var capturedDef = def;
+                    cache.button.onClick.RemoveAllListeners();
+                    cache.button.onClick.AddListener(() => OnClickCraftBuilding(capturedDef));
+                }
+
+                _craftRows.Add(cache);
+            }
+        }
+
+        // --- 表示内容の更新だけ行う（Destroy/Instantiate はしない） ---
+        for (int i = 0; i < _craftRows.Count && i < craftableBuildings.Count; i++)
+        {
+            var cache = _craftRows[i];
+            var def = craftableBuildings[i];
+            if (def == null || cache.root == null) continue;
+
+            // def が差し替えられていた場合に備えて更新しておく
+            cache.def = def;
+
+            if (cache.icon != null)
+            {
+                cache.icon.sprite = def.icon;
+                cache.icon.enabled = (cache.icon.sprite != null);
+            }
+
+            int kitCount = dm.GetCraftedBuildingCount(def);
+            bool canCraft = dm.CanCraftBuilding(def, 1);
+
+            if (cache.label != null)
+            {
+                cache.label.text = kitCount.ToString();   // ★数字だけ
+            }
+
+            if (cache.button != null)
+            {
+                cache.button.interactable = canCraft;
+            }
+        }
+    }
+
+    void OnClickCraftBuilding(BuildingDef def)
+    {
+        var dm = DroneBuildManager.Instance;
+        if (dm == null || def == null) return;
+
+        if (!dm.TryCraftBuilding(def, 1))
+        {
+            Debug.Log($"[InventoryUI] {def.displayName} をクラフトできませんでした（素材不足？）");
+            return;
+        }
+
+        // 素材在庫 & キット在庫が変わるので、一覧を更新
+        RefreshList();
     }
 
     Sprite FindIcon(string itemName)

@@ -97,6 +97,18 @@ public class DroneWorker : MonoBehaviour
         _buildCargoCount = 0;
     }
 
+    // ★追加：buildByCraftedKit 用の「キット積み荷」
+    Dictionary<BuildingDef, int> _kitCargo = new Dictionary<BuildingDef, int>();
+    int _kitCargoCount = 0;
+
+    public int KitCargoCount => _kitCargoCount;
+
+    void ClearKitCargo()
+    {
+        _kitCargo.Clear();
+        _kitCargoCount = 0;
+    }
+
     // =========================
     // 建築用のフロー管理
     // =========================
@@ -225,19 +237,43 @@ public class DroneWorker : MonoBehaviour
             return GetMinedItemSummary();
         }
 
-        // Builder の場合は建築用の積み荷を表示
+        // Builder の場合は建築用の積み荷＋キットを表示
         if (job == JobType.Builder)
         {
-            if (_buildCargoItems == null || _buildCargoItems.Count == 0 || _buildCargoCount <= 0)
+            bool hasMaterial =
+                _buildCargoItems != null &&
+                _buildCargoItems.Count > 0 &&
+                _buildCargoCount > 0;
+
+            bool hasKits =
+                _kitCargo != null &&
+                _kitCargoCount > 0;
+
+            if (!hasMaterial && !hasKits)
                 return "";
 
             var sb = new StringBuilder();
-            sb.AppendLine("所持素材:");
 
-            foreach (var kv in _buildCargoItems)
+            if (hasMaterial)
             {
-                // kv.Key = itemName（BuildingDef.BuildCost.itemName）
-                sb.AppendLine($"{kv.Key} x {kv.Value}");
+                sb.AppendLine("所持素材:");
+                foreach (var kv in _buildCargoItems)
+                {
+                    sb.AppendLine($"{kv.Key} x {kv.Value}");
+                }
+            }
+
+            if (hasKits)
+            {
+                sb.AppendLine("所持キット:");
+                foreach (var kv in _kitCargo)
+                {
+                    var def = kv.Key;
+                    string name = (def != null && !string.IsNullOrEmpty(def.displayName))
+                        ? def.displayName
+                        : (def != null ? def.name : "Kit");
+                    sb.AppendLine($"{name} x {kv.Value}");
+                }
             }
 
             return sb.ToString();
@@ -247,6 +283,39 @@ public class DroneWorker : MonoBehaviour
         return "";
     }
 
+    bool HasKitCargoFor(BuildingDef def)
+    {
+        if (def == null) return false;
+        if (_kitCargo == null || _kitCargoCount <= 0) return false;
+
+        int v;
+        if (_kitCargo.TryGetValue(def, out v))
+        {
+            return v > 0;
+        }
+        return false;
+    }
+
+    bool ConsumeKitForCurrentDef()
+    {
+        if (_task == null || _task.def == null) return false;
+        var def = _task.def;
+
+        int v;
+        if (_kitCargo == null || !_kitCargo.TryGetValue(def, out v) || v <= 0)
+            return false;
+
+        v--;
+        _kitCargoCount--;
+
+        if (v > 0)
+            _kitCargo[def] = v;
+        else
+            _kitCargo.Remove(def);
+
+        return true;
+    }
+
     public void SetTask(DroneBuildManager.BuildTask task)
     {
         _task = task;
@@ -254,7 +323,7 @@ public class DroneWorker : MonoBehaviour
         _moveTimer = 0f;
         _workTimer = 0f;
 
-        // 採掘関連カウンタもリセット（元からある処理はそのまま）
+        // 採掘関連カウンタもリセット
         _miningTimer = 0f;
         _currentCarryCount = 0;
         _miningVisualNotified = false;
@@ -265,14 +334,14 @@ public class DroneWorker : MonoBehaviour
             (_task.kind == DroneBuildManager.TaskKind.BigBuild ||
              _task.kind == DroneBuildManager.TaskKind.FineBuild))
         {
-            // 建築タスク：まず建築現場へ向かう
+            // 建築タスク：キット建築も含めて「まず現場へ」
             _buildSitePos = _task.worldPos;
             _buildPhase = BuildFlowPhase.GoingToSite;
             _target = _buildSitePos;
         }
         else
         {
-            // それ以外のタスク（解体・採掘など）は従来どおりターゲットに直接向かう
+            // 解体・採掘などは従来通りターゲットへ
             _buildSitePos = Vector3.zero;
             _buildPhase = BuildFlowPhase.None;
             _target = (_task != null) ? _task.worldPos : transform.position;
@@ -394,12 +463,46 @@ public class DroneWorker : MonoBehaviour
         switch (_buildPhase)
         {
             case BuildFlowPhase.GoingToSite:
-                // すでに建材を積んでいるなら、ベースには寄らずにこの建物に納品して建築開始
-                if (_buildCargoCount > 0)
+                // ★buildByCraftedKit の建物は、「キットを持っていればその場で建築開始」、
+                // 持っていなければ Base に取りに行く。
+                if (_task != null && _task.def != null && _task.def.buildByCraftedKit)
                 {
-                    DeliverBuildMaterialsToCurrentSite();
+                    // すでにこの建物用のキットを積んでいるなら、その場で建築開始
+                    if (HasKitCargoFor(_task.def))
+                    {
+                        if (ConsumeKitForCurrentDef())
+                        {
+                            _buildPhase = BuildFlowPhase.Building;
+                            _state = DroneState.Working;
+                            _workTimer = 0f;
+                            _workProgress = 0f;
+                            _hasBuildMaterials = true;
+                            return;
+                        }
+                    }
 
-                    // この建物での建築作業を開始
+                    // キットを持っていない → Base に取りに行く
+                    if (baseTransform == null)
+                    {
+                        manager.NotifyDroneFinished(this, _task, false);
+                        _task = null;
+                        _state = DroneState.Idle;
+                        _buildPhase = BuildFlowPhase.None;
+                        _hasBuildMaterials = false;
+                        return;
+                    }
+
+                    _buildPhase = BuildFlowPhase.GoingToBase;
+                    _target = baseTransform.position;
+                    _moveStartPos = transform.position;
+                    _moveTotalDistance = Vector3.Distance(_moveStartPos, _target);
+                    return;
+                }
+
+                // buildByCraftedKit でキットを持っているフラグだけ立っている場合
+                if (_task.def != null && _task.def.buildByCraftedKit && _hasBuildMaterials)
+                {
+                    // そのまま建築開始（キットはすでに Base で消費済み）
                     _buildPhase = BuildFlowPhase.Building;
                     _state = DroneState.Working;
                     _workTimer = 0f;
@@ -407,7 +510,7 @@ public class DroneWorker : MonoBehaviour
                     return;
                 }
 
-                // 建材を一切持っていない場合は、従来どおり Base に取りに行く
+                // 何も持っていない場合は Base に取りに行く
                 if (baseTransform == null)
                 {
                     manager.NotifyDroneFinished(this, _task, false);
@@ -436,23 +539,62 @@ public class DroneWorker : MonoBehaviour
                         return;
                     }
 
-                    // Base に着いたかチェック
-                    Vector3 pos = transform.position;
-                    Vector3 toBase = baseTransform.position - pos;
-                    float distBase = toBase.magnitude;
+                    // ★ ここに来た時点で TickMove によって Base には到着済み
 
-                    if (distBase > arriveDistance)
+                    // ─────────────────────
+                    // 1) buildByCraftedKit 建築のとき（キットを積む）
+                    // ─────────────────────
+                    // ─────────────────────
+                    // 1) buildByCraftedKit 建築のとき（キットを積む）
+                    // ─────────────────────
+                    if (_task != null && _task.def != null && _task.def.buildByCraftedKit)
                     {
-                        // まだ Base へ向かっている途中
-                        if (distBase > 0.001f)
+                        int capacity = BuildCarryCapacity;
+                        if (capacity <= 0) capacity = 1;
+
+                        // ★ すでに積んでいるキットがあれば Base 在庫に戻す
+                        if (_kitCargoCount > 0 && _kitCargo != null && _kitCargo.Count > 0)
                         {
-                            Vector3 dir = toBase / distBase;
-                            transform.position += dir * speed * Time.deltaTime;
+                            manager.ReturnCraftedKits(_kitCargo);
                         }
+
+                        // 既存のキット積み荷はいったんクリア
+                        ClearKitCargo();
+
+                        // Base から、この BuildingDef 用のキットをキャパシティ分だけ積む
+                        int takenKits = manager.ConsumeCraftedBuildings(_task.def, capacity);
+
+                        _kitCargoCount = 0;
+                        if (takenKits > 0)
+                        {
+                            _kitCargo[_task.def] = takenKits;
+                            _kitCargoCount = takenKits;
+                        }
+
+                        _hasBuildMaterials = (_kitCargoCount > 0);
+
+                        if (!_hasBuildMaterials)
+                        {
+                            // 1個も積めなかった → 今回はこの建物は一旦あきらめて待機
+                            _task = null;
+                            _state = DroneState.Idle;
+                            _buildPhase = BuildFlowPhase.None;
+                            return;
+                        }
+
+                        // キットを積んだので現場に戻る
+                        _buildPhase = BuildFlowPhase.ReturningWithMaterials;
+                        _target = _buildSitePos;
+
+                        _moveStartPos = transform.position;
+                        _moveTotalDistance = Vector3.Distance(_moveStartPos, _target);
+                        // _state は MovingToTarget のままで OK
                         return;
                     }
 
-                    // ===== Base に到着したので、必要な建材をキャパ分だけ積む =====
+                    // ─────────────────────
+                    // 2) 通常の建築材料のとき（今まで通り）
+                    // ─────────────────────
 
                     // ConstructionState を確保
                     var cons = _task.ghost != null
@@ -466,16 +608,22 @@ public class DroneWorker : MonoBehaviour
 
                     if (cons != null)
                     {
-                        cons.EnsureInitialized(_task.def);   // 既に初期化済みなら内部でスキップ
+                        cons.EnsureInitialized(_task.def);
                     }
 
                     // ドローンの建築キャパ
-                    int capacity = BuildCarryCapacity;
+                    int capacityNormal = BuildCarryCapacity;
+
+                    // ★ すでに積んでいる建築素材があれば Base 在庫に戻す
+                    if (_buildCargoCount > 0 && _buildCargoItems != null && _buildCargoItems.Count > 0)
+                    {
+                        manager.ReturnBuildMaterials(_buildCargoItems);
+                    }
 
                     // Base から「この建物 + 他の建物」の残り必要分を
                     // キャパ上限までまとめて取り出す
                     ClearBuildCargo();
-                    var taken = manager.TakeBuildMaterialsForRoute(_task, cons, capacity);
+                    var taken = manager.TakeBuildMaterialsForRoute(_task, cons, capacityNormal);
 
                     _buildCargoCount = 0;
                     foreach (var kv in taken)
@@ -488,46 +636,63 @@ public class DroneWorker : MonoBehaviour
 
                     if (!_hasBuildMaterials)
                     {
-                        // 何も積めなかった → 今回はこの建物は一旦あきらめて待機（キューには戻さない）
+                        // 何も積めなかった → 今回はこの建物は一旦あきらめて待機
                         _task = null;
                         _state = DroneState.Idle;
                         _buildPhase = BuildFlowPhase.None;
                         return;
                     }
 
-                    // ===== 材料を積んだので「建材持ち帰りフェーズ」に入る =====
+                    // 材料を積んだので現場に戻る
                     _buildPhase = BuildFlowPhase.ReturningWithMaterials;
 
-                    // 建築現場に戻る
-                    _target = _buildSitePos;  // or _task.worldPos でもOKだが、最初に記録した地点を使う
-
-                    // UI 用の移動開始位置と距離も更新
+                    _target = _buildSitePos;
                     _moveStartPos = transform.position;
                     _moveTotalDistance = Vector3.Distance(_moveStartPos, _target);
-
-                    // _state はもともと MovingToTarget のままなので、そのまま TickMove() に任せる
                     return;
                 }
 
             case BuildFlowPhase.ReturningWithMaterials:
-                // 素材を持って現場に戻ってきたので、この建物に納品する
-                DeliverBuildMaterialsToCurrentSite();
+                // ★キット建築の場合
+                if (_task != null && _task.def != null && _task.def.buildByCraftedKit)
+                {
+                    // この建物ぶんのキットを1個消費できれば建築開始
+                    if (!ConsumeKitForCurrentDef())
+                    {
+                        // なぜかキットが無い → 失敗扱いで一旦終了
+                        manager.NotifyDroneFinished(this, _task, false);
+                        _task = null;
+                        _state = DroneState.Idle;
+                        _buildPhase = BuildFlowPhase.None;
+                        _hasBuildMaterials = false;
+                        return;
+                    }
 
-                // ここから建築作業を開始（完成条件は次のステップで拡張予定）
-                _buildPhase = BuildFlowPhase.Building;
-                _state = DroneState.Working;
-                _workTimer = 0f;
-                _workProgress = 0f;
-                return;
+                    _buildPhase = BuildFlowPhase.Building;
+                    _state = DroneState.Working;
+                    _workTimer = 0f;
+                    _workProgress = 0f;
+                    return;
+                }
 
-            case BuildFlowPhase.Building:
-                // 既に建築中の場合はそのまま TickWork() に任せる
-                _state = DroneState.Working;
-                return;
+                // ★通常建材の場合は、ここで納品してから Building に移行
+                if (_buildCargoCount > 0)
+                {
+                    DeliverBuildMaterialsToCurrentSite();
 
-            default:
-                _state = DroneState.Working;
+                    _buildPhase = BuildFlowPhase.Building;
+                    _state = DroneState.Working;
+                    _workTimer = 0f;
+                    _workProgress = 0f;
+                    return;
+                }
+
+                // ここまで来るのは基本的におかしいので安全に終了
+                manager.NotifyDroneFinished(this, _task, false);
+                _task = null;
+                _state = DroneState.Idle;
                 _buildPhase = BuildFlowPhase.None;
+                _hasBuildMaterials = false;
                 return;
         }
     }
@@ -538,9 +703,19 @@ public class DroneWorker : MonoBehaviour
     /// </summary>
     public bool HasBuildCargoFor(BuildingDef def)
     {
-        if (def == null || def.buildCosts == null)
+        if (def == null)
             return false;
 
+        // ★buildByCraftedKit の建物は「キット積み荷」をチェック
+        if (def.buildByCraftedKit)
+        {
+            return HasKitCargoFor(def);
+        }
+
+        if (def.buildCosts == null)
+            return false;
+
+        // 通常の建築コストは従来どおり _buildCargoItems を見る
         foreach (var cost in def.buildCosts)
         {
             if (cost == null) continue;
@@ -550,7 +725,6 @@ public class DroneWorker : MonoBehaviour
             int have;
             if (_buildCargoItems.TryGetValue(cost.itemName, out have) && have > 0)
             {
-                // この建物に必要な itemName を少なくとも 1 個積んでいる
                 return true;
             }
         }
@@ -648,6 +822,31 @@ public class DroneWorker : MonoBehaviour
             _buildPhase = BuildFlowPhase.None;
             _hasBuildMaterials = false;
         }
+        // 例：建築タスクの処理の最後あたり
+        if (_workProgress >= 1f)
+        {
+            bool success = true;
+
+            // 通常建材建築の場合は ConstructionState の完了も見る
+            if (_task.def != null && !_task.def.buildByCraftedKit)
+            {
+                var go = _task.ghost;
+                var cons = go != null ? go.GetComponent<ConstructionState>() : null;
+                if (cons != null && !cons.IsCompleted)
+                {
+                    // まだ必要分が足りていない → success = false にするなど
+                    success = false;
+                }
+            }
+
+            manager.NotifyDroneFinished(this, _task, success);
+            _task = null;
+            _state = DroneState.Idle;
+            _buildPhase = BuildFlowPhase.None;
+            _hasBuildMaterials = false;
+            _workProgress = 0f;
+            return;
+        }
     }
 
     void TickReturnToBase()
@@ -665,10 +864,9 @@ public class DroneWorker : MonoBehaviour
 
         if (dist <= arriveDistance)
         {
-            // ====== ここで納品処理をする ======
+            // ====== MineResource タスクだけ納品処理 ======
             if (manager != null && _task != null && _task.kind == DroneBuildManager.TaskKind.MineResource)
             {
-                // 今回掘っていた資源名を決める
                 string displayName = "Resouce1";
                 var marker = _task.resourceMarker;
                 if (marker != null && marker.def != null && !string.IsNullOrEmpty(marker.def.displayName))
@@ -676,18 +874,15 @@ public class DroneWorker : MonoBehaviour
                     displayName = marker.def.displayName;
                 }
 
-                // このドローンが「今回のタスクで持っている分」を全体在庫に加算
                 manager.RegisterDeliveredItems(displayName, _currentCarryCount);
+                manager.NotifyDroneFinished(this, _task, true);
+                _task = null;
             }
 
-            // ドローン側の「持ち物」をリセット
+            // タスクが無い / Mine 以外のタスクはここで単にリセット
             _currentCarryCount = 0;
             _minedItems.Clear();
             _minedItemStats.Clear();
-
-            // タスク自体は完了扱いにする
-            manager?.NotifyDroneFinished(this, _task, true);
-            _task = null;
 
             _state = DroneState.Idle;
             return;
@@ -699,6 +894,7 @@ public class DroneWorker : MonoBehaviour
             Vector3 dir = to / dist;
             transform.position += dir * speed * Time.deltaTime;
         }
+
         _buildPhase = BuildFlowPhase.None;
         _hasBuildMaterials = false;
     }
