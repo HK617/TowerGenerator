@@ -20,6 +20,18 @@ public class EnemyChaseBase2D : MonoBehaviour
     public GameObject deathVfxPrefab;          // 死亡エフェクト（任意）
     public float deathVfxLife = 2f;
 
+    [Header("Attack")]
+    [Tooltip("1 回の攻撃で与えるダメージ")]
+    public float attackDamage = 5f;
+
+    [Tooltip("攻撃間隔（秒）")]
+    public float attackInterval = 1.0f;
+
+    [Tooltip("攻撃対象として認識する Base の Tag 名")]
+    public string baseTag = "Base";
+
+    float _attackTimer = 0f;
+
     Rigidbody2D _rb;
     float _hp;
     bool _dead;
@@ -116,5 +128,44 @@ public class EnemyChaseBase2D : MonoBehaviour
             _rb.linearVelocity = Vector2.zero;
             enabled = false;
         }
+    }
+
+    void OnTriggerStay2D(Collider2D other)
+    {
+        // Base 以外は無視
+        if (!other.CompareTag(baseTag))
+            return;
+
+        // すでに死亡している敵は攻撃しない
+        if (_dead) return;
+
+        // Base に触れている間はその場で止まる
+        if (_rb != null)
+        {
+            _rb.linearVelocity = Vector2.zero;
+        }
+
+        // 攻撃タイマー進行
+        _attackTimer += Time.deltaTime;
+        if (_attackTimer < attackInterval)
+            return;
+
+        _attackTimer = 0f;
+
+        // BaseHealth を探してダメージを与える
+        var baseHp = other.GetComponent<BaseHealth>();
+        if (baseHp != null)
+        {
+            baseHp.TakeDamage(attackDamage);
+        }
+    }
+
+    void OnTriggerExit2D(Collider2D other)
+    {
+        // Base から離れたら攻撃タイマーをリセット
+        if (!other.CompareTag(baseTag))
+            return;
+
+        _attackTimer = 0f;
     }
 }
