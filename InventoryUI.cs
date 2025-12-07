@@ -354,6 +354,10 @@ public class InventoryUI : MonoBehaviour
             string itemName = kv.Key;
             int count = kv.Value;
 
+            // ★ 所持数 0 のアイテムは表示しない
+            if (count <= 0)
+                continue;
+
             var row = Instantiate(rowPrefab, listRoot);
 
             Image img = null;
@@ -461,17 +465,26 @@ public class InventoryUI : MonoBehaviour
 
             cache.def = def;
 
+            // ★ ここで dm を再定義しない（既に上で定義済み）
+            if (dm == null) break;
+
+            // 所持しているキット数
+            int kitCount = dm.GetCraftedBuildingCount(def);
+            bool hasAny = kitCount > 0;
+
+            // ★ 所持数 0 の建物ボタンはインベントリでは非表示にする
+            cache.root.SetActive(hasAny);
+            if (!hasAny)
+                continue;
+
             if (cache.icon != null)
             {
                 cache.icon.sprite = def.icon;
                 cache.icon.enabled = (cache.icon.sprite != null);
             }
 
-            int kitCount = dm.GetCraftedBuildingCount(def);
-
             if (cache.label != null)
             {
-                // 所持しているキット数だけを数字で表示
                 cache.label.text = kitCount.ToString();
             }
 
@@ -540,6 +553,9 @@ public class InventoryUI : MonoBehaviour
             }
         }
 
+        // ★ここから各行の内容更新（Qパネルは「作れる数」を表示）
+        var globalInv = dm.GlobalInventory;   // 全体在庫【素材】
+
         for (int i = 0; i < _craftScreenRows.Count && i < craftableBuildings.Count; i++)
         {
             var cache = _craftScreenRows[i];
@@ -554,12 +570,37 @@ public class InventoryUI : MonoBehaviour
                 cache.icon.enabled = (cache.icon.sprite != null);
             }
 
-            int kitCount = dm.GetCraftedBuildingCount(def);
-            bool canCraft = dm.CanCraftBuilding(def, 1);
+            // --- 作れる数を計算 ---
+            int craftableCount = 0;
+
+            if (def.buildCosts != null && def.buildCosts.Count > 0)
+            {
+                craftableCount = int.MaxValue;
+
+                foreach (var cost in def.buildCosts)
+                {
+                    if (cost == null) continue;
+                    if (string.IsNullOrEmpty(cost.itemName)) continue;
+                    if (cost.amount <= 0) continue;
+
+                    int have = 0;
+                    globalInv.TryGetValue(cost.itemName, out have);
+
+                    // この素材だけ見たときの最大クラフト数
+                    int byThisItem = have / cost.amount;
+                    craftableCount = Mathf.Min(craftableCount, byThisItem);
+                }
+
+                if (craftableCount == int.MaxValue)
+                    craftableCount = 0;
+            }
+
+            bool canCraft = (craftableCount > 0);
 
             if (cache.label != null)
             {
-                cache.label.text = kitCount.ToString();
+                // ★Qパネルでは「作れる数」を表示
+                cache.label.text = craftableCount.ToString();
             }
 
             if (cache.button != null)
