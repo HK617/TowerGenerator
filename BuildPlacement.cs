@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Tilemaps;
@@ -688,7 +689,14 @@ public class BuildPlacement : MonoBehaviour
         if (flowField != null)
             RegisterBuildingToFlowField(null, target.transform.position, false);
 
+        // ★ EnemyPathGrid からも「空きセル」として登録
+        if (EnemyPathGrid.Instance != null)
+        {
+            EnemyPathGrid.Instance.SetBuildingAtWorld(target.transform.position, null);
+        }
+
         Destroy(target);
+
     }
 
     // ドローンが完了したときに呼ぶ、六角(ビッグ)セル用の軽量完成処理
@@ -757,6 +765,12 @@ public class BuildPlacement : MonoBehaviour
 
         if (flowField != null)
             RegisterBuildingToFlowField(def, pos, true);
+
+        // FlowField 登録のすぐ下あたりに追加
+        if (EnemyPathGrid.Instance != null && def != null)
+        {
+            EnemyPathGrid.Instance.SetBuildingAtWorld(pos, def);
+        }
     }
 
     // ★ Base専用の復元（ロード時やドローン完了時に共通で使う）
@@ -816,6 +830,13 @@ public class BuildPlacement : MonoBehaviour
         if (DroneBuildManager.Instance != null)
         {
             DroneBuildManager.Instance.RegisterBase(baseGO.transform);
+        }
+
+        // ★ EnemyPathGrid（敵レール）にゴール設定を反映
+        if (EnemyPathGrid.Instance != null)
+        {
+            Vector3 baseWorldPos = baseGO.transform.position;
+            EnemyPathGrid.Instance.SetGoalByBaseWorld(baseWorldPos);
         }
     }
 
@@ -989,14 +1010,23 @@ public class BuildPlacement : MonoBehaviour
         foreach (var kv in _placedFine)
             if (kv.Value == target)
                 keysToRemove.Add(kv.Key);
+
         foreach (var k in keysToRemove)
+        {
             _placedFine.Remove(k);
+        }
 
         RemoveDemolitionIcon(target);
 
         NotifyMachineNeighbors(target);
         if (flowField != null)
             RegisterBuildingToFlowField(null, target.transform.position, false);
+
+        // ★ EnemyPathGrid からも「空きセル」として登録
+        if (EnemyPathGrid.Instance != null)
+        {
+            EnemyPathGrid.Instance.SetBuildingAtWorld(target.transform.position, null);
+        }
 
         Destroy(target);
     }
@@ -1015,23 +1045,31 @@ public class BuildPlacement : MonoBehaviour
         // ★ 完成したので Machine 側のレイヤーに戻す
         RestoreMachineLayer(ghost, def);
 
-        // ★ 追加：コンベアならゴーストモード解除 → ロジックに復帰
+        // ★ コンベアならゴーストモード解除
         var belt = ghost.GetComponent<ConveyorBelt>();
         if (belt != null)
             belt.SetGhostMode(false);
 
-        var tmp = new List<Vector2Int>();
+        // どの fine セルをこの建物が占有しているか整理
+        var ownedCells = new List<Vector2Int>();
         foreach (var kv in _placedFine)
             if (kv.Value == ghost)
-                tmp.Add(kv.Key);
-        foreach (var k in tmp)
-            _placedFine[k] = ghost;
+                ownedCells.Add(kv.Key);
+
+        foreach (var cell in ownedCells)
+            _placedFine[cell] = ghost;
 
         // ★ここで Machine 周囲更新を呼ぶ
         NotifyMachineNeighbors(ghost);
 
         if (flowField != null && def != null)
             RegisterBuildingToFlowField(def, pos, true);
+
+        // FlowField 登録のすぐ下あたりに追加
+        if (EnemyPathGrid.Instance != null && def != null)
+        {
+            EnemyPathGrid.Instance.SetBuildingAtWorld(pos, def);
+        }
     }
 
     // ============================================================

@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Tilemaps;
 
@@ -202,18 +203,35 @@ public class EnemySpawnerRaid : MonoBehaviour
     {
         if (enemyPrefab == null)
         {
-            Debug.LogWarning("[EnemySpawnerRaid] enemyPrefabが未設定です。敵は出ません。");
+            Debug.LogWarning("[EnemySpawnerRaid] enemyPrefab が未設定です。敵は出ません。");
             return;
         }
 
         foreach (var site in _currentSites)
         {
-            // ここはあなたの元のロジックに合わせてください（敵の数など）
+            // 敵を複数体生成する（従来どおり）
             for (int i = 0; i < 3; i++)
             {
                 Vector2 j = Random.insideUnitCircle * 0.25f;
-                var pos = site.worldPos + new Vector3(j.x, j.y, 0f);
-                Instantiate(enemyPrefab, pos, Quaternion.identity);
+                Vector3 spawnPos = site.worldPos + new Vector3(j.x, j.y, 0f);
+
+                // 実際に敵を生成
+                GameObject enemy = Instantiate(enemyPrefab, spawnPos, Quaternion.identity);
+
+                // ★ EnemyPathGrid を正式に使う
+                if (EnemyPathGrid.Instance != null)
+                {
+                    // 敵スタートセル（Fine グリッドではない）
+                    Vector2Int startCell = EnemyPathGrid.Instance.WorldToCell(spawnPos);
+
+                    // Base までのレールを生成
+                    List<Vector2> path = EnemyPathGrid.Instance.BuildPathFromWorld(spawnPos);
+
+                    // follower に渡す
+                    var follower = enemy.GetComponent<EnemyPathFollower>();
+                    if (follower != null)
+                        follower.SetPath(path);
+                }
             }
         }
     }

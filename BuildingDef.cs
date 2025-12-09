@@ -30,6 +30,23 @@ public class BuildingDef : ScriptableObject
     [Tooltip("回転可能なオブジェクトかどうか。TrueにするとRキーで回転させられる")]
     public bool allowRotation = false;
 
+    // BuildingDef.cs 内に追記
+    [Header("Enemy Path / Destruction")]
+    [Tooltip("敵がルート生成時に『壊して通れる』ブロックかどうか")]
+    public bool destructibleForEnemy = false;
+
+    [Tooltip("敵がこのブロックを壊した場合の追加コスト（大きいほど壊しにくい）。" +
+             "destructibleForEnemy=false の場合は無視される")]
+    public int breakCostForEnemy = 20;
+
+    public int GetEnemyBreakCost()
+    {
+        if (!destructibleForEnemy)
+            return int.MaxValue;   // 壊せない = 絶対通行不可
+
+        return Mathf.Max(0, breakCostForEnemy);
+    }
+
     [System.Serializable]
     public class BuildCost
     {
